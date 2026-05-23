@@ -24,12 +24,13 @@ const db = admin.firestore();
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const API_KEY = process.env.API_KEY;
 const ADMIN_ID = parseInt(process.env.ADMIN_ID);
-const OTP_GROUP_ID = process.env.OTP_GROUP_ID; // OTP গ্রুপের আইডি
+const OTP_GROUP_ID = process.env.OTP_GROUP_ID; 
 const BASE_URL = 'http://185.190.142.81';
 const HEADERS = { 'X-API-Key': API_KEY };
 
 const bot = new TelegramBot(BOT_TOKEN, { polling: true });
 let adminState = {};
+const userLastOrder = new Map(); // Inbox এর জন্য ইউজারের লেটেস্ট নাম্বার সেভ রাখা হবে
 
 // --- ৪. ডাটাবেস ফাংশনসমূহ ---
 async function loadRanges() {
@@ -69,36 +70,38 @@ function maskNumber(phone) {
 
 function getMainMenu(chatId) {
     let kb = [
-        [{ text: "📱 GET NUMBER" }, { text: "📊 TRAFFIC" }],
-        [{ text: "🔐 2FA AUTHENTICATOR" }, { text: "👤 PROFILE INFO" }],
-        [{ text: "🎧 SUPPORT" }]
+        [{ text: "📱 GET NUMBER" }, { text: "📥 INBOX" }],
+        [{ text: "📊 TRAFFIC" }, { text: "🔐 2FA AUTHENTICATOR" }],
+        [{ text: "👤 PROFILE INFO" }, { text: "🎧 SUPPORT" }]
     ];
     if (chatId === ADMIN_ID) kb.push([{ text: "🛠️ ADMIN PANEL" }]);
     return { reply_markup: { keyboard: kb, resize_keyboard: true } };
 }
 
-// --- ৬. অটো-পোলিং ফাংশন (এটিই OTP না আসার সমস্যা সলভ করবে) ---
+// --- ৬. অটো-পোলিং ফাংশন (OTP না আসার সমস্যার স্থায়ী সমাধান) ---
 function startOtpPolling(chatId, msgId, numId, phone, plat, country, userFirstName) {
     let attempts = 0;
-    const maxAttempts = 90; // ৩ মিনিট পর্যন্ত চেক করবে (৯০ * ২ সেকেন্ড)
+    const maxAttempts = 90; // ৩ মিনিট চেক করবে
 
     const interval = setInterval(async () => {
         try {
             const res = await axios.get(`${BASE_URL}/api/v1/numbers/${numId}/sms`, { headers: HEADERS });
             
-            // API ডকুমেন্টেশন অনুযায়ী success এবং otp চেক
             if (res.data.success && res.data.otp) {
-                clearInterval(interval); // OTP পেলে চেকিং বন্ধ
+                clearInterval(interval);
                 const otpCode = res.data.otp;
                 
-                // ১. ইউজারকে OTP দেখানো (অটো আপডেট)
-                const text = `✅ *OTP Received Successfully!*\n\n🌍 *Country:* ${country}\n📱 *Number:* \`${phone}\`\n🌐 *Platform:* ${plat.toUpperCase()}\n\n🎉 *OTP Code:* \`${otpCode}\``;
+                // ১. আগের "Generating" মেসেজটা আপডেট করে সাকসেস মেসেজ দেওয়া
+                const text = `✅ *Number Generated & OTP Received!*\n\n🌍 *Country:* ${country}\n📱 *Number:* \`${phone}\`\n🌐 *Platform:* ${plat.toUpperCase()}`;
                 bot.editMessageText(text, { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown' });
 
-                // ২. ট্রাফিক আপডেট করা
+                // ২. OTP এর জন্য একদম আলাদা মেসেজ দেওয়া (কপি করার সুবিধার জন্য)
+                bot.sendMessage(chatId, `🎉 *Your OTP Code (Click to Copy):*\n\n\`${otpCode}\``, { parse_mode: 'Markdown' });
+
+                // ৩. ট্রাফিক আপডেট
                 updateTraffic(plat, country);
 
-                // ৩. OTP গ্রুপে সেন্ড করা
+                // ৪. OTP গ্রুপে সেন্ড করা (হাইড নাম্বার দিয়ে)
                 if (OTP_GROUP_ID) {
                     const maskedPhone = maskNumber(phone);
                     const groupMsg = `🔥 *NEW OTP RECEIVED!*\n\n🌐 *Platform:* ${plat.toUpperCase()}\n🌍 *Country:* ${country}\n📱 *Number:* ${maskedPhone}\n📩 *OTP Code:* \`${otpCode}\`\n👤 *User:* ${userFirstName}`;
@@ -107,7 +110,7 @@ function startOtpPolling(chatId, msgId, numId, phone, plat, country, userFirstNa
                 return;
             }
         } catch (err) {
-            // নেটওয়ার্ক সমস্যার কারণে একবার ফেইল করলে যেন ব্রেক না হয়, তাই ইগনোর করা হলো
+            // নেটওয়ার্ক সমস্যার কারণে ইগনোর করা হলো
         }
 
         attempts++;
@@ -115,7 +118,7 @@ function startOtpPolling(chatId, msgId, numId, phone, plat, country, userFirstNa
             clearInterval(interval);
             bot.editMessageText(`⚠️ *OTP Timeout!*\n\n🌍 *Country:* ${country}\n📱 *Number:* \`${phone}\`\n🌐 *Platform:* ${plat.toUpperCase()}\n\n_৩ মিনিটের মধ্যে কোনো OTP আসেনি। দয়া করে নতুন নাম্বার নিন।_`, { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown' });
         }
-    }, 2000); // ঠিক ২ সেকেন্ড পর পর চেক করবে (API রুলস অনুযায়ী)
+    }, 2000); 
 }
 
 // --- ৭. ফোর্স সাবস্ক্রাইব ---
@@ -146,7 +149,7 @@ async function checkForceSub(chatId) {
     return true;
 }
 
-// --- ৮. বটের কমান্ড এবং মেনু লজিক ---
+// --- ৮. কমান্ড এবং মেসেজ লজিক ---
 bot.onText(/\/start/, async (msg) => {
     if (!(await checkForceSub(msg.chat.id))) return;
     bot.sendMessage(msg.chat.id, "《 👑 FIRE OTP BOT 👑 》\n\n👋 *WELCOME, " + msg.from.first_name + "!*", { parse_mode: 'Markdown', ...getMainMenu(msg.chat.id) });
@@ -222,6 +225,24 @@ bot.on('message', async (msg) => {
         if (inlineKeyboard.length === 0) return bot.sendMessage(chatId, "⚠️ *কোনো সাইট বা নাম্বার স্টকে নেই।*", { parse_mode: 'Markdown' });
         
         bot.sendMessage(chatId, "📌 *Select a Platform:*", { parse_mode: 'Markdown', reply_markup: { inline_keyboard: inlineKeyboard } });
+    }
+    else if (text === "📥 INBOX") {
+        const lastOrder = userLastOrder.get(chatId);
+        if (!lastOrder) return bot.sendMessage(chatId, "⚠️ *আপনার কোনো রিসেন্ট নাম্বার নেই!* দয়া করে 'GET NUMBER' থেকে নতুন নাম্বার নিন।", { parse_mode: 'Markdown' });
+        
+        const sentMsg = await bot.sendMessage(chatId, "⏳ *Checking Inbox...*", { parse_mode: 'Markdown' });
+        try {
+            const res = await axios.get(`${BASE_URL}/api/v1/numbers/${lastOrder.numId}/sms`, { headers: HEADERS, timeout: 10000 });
+            if (res.data.success && res.data.otp) {
+                bot.editMessageText(`✅ *Latest Inbox for ${lastOrder.plat.toUpperCase()}* (\`${lastOrder.phone}\`):\n\n🎉 *OTP Code:*\n\`${res.data.otp}\``, { chat_id: chatId, message_id: sentMsg.message_id, parse_mode: 'Markdown' });
+            } else if (res.data.status === 'pending') {
+                bot.editMessageText(`⏳ *${lastOrder.plat.toUpperCase()}* (\`${lastOrder.phone}\`) এর OTP এখনও আসেনি। দয়া করে অপেক্ষা করুন।`, { chat_id: chatId, message_id: sentMsg.message_id, parse_mode: 'Markdown' });
+            } else {
+                bot.editMessageText("⚠️ *কোনো লেটেস্ট OTP পাওয়া যায়নি বা সেশন শেষ।*", { chat_id: chatId, message_id: sentMsg.message_id, parse_mode: 'Markdown' });
+            }
+        } catch (e) {
+             bot.editMessageText("⚠️ *সার্ভারের সাথে কানেক্ট করা যাচ্ছে না।*", { chat_id: chatId, message_id: sentMsg.message_id, parse_mode: 'Markdown' });
+        }
     }
     else if (text === "📊 TRAFFIC") {
         const traffic = await getTraffic();
@@ -305,7 +326,7 @@ bot.on('callback_query', async (query) => {
     else if (data.startsWith('del_rng_') && chatId === ADMIN_ID) {
         const parts = data.split('_');
         const plat = parts[2];
-        const country = parts.slice(3).join('_'); // স্পেসযুক্ত কান্ট্রির নামের জন্য
+        const country = parts.slice(3).join('_');
         const ranges = await loadRanges();
         if (ranges[plat] && ranges[plat][country]) {
             delete ranges[plat][country];
@@ -335,7 +356,7 @@ bot.on('callback_query', async (query) => {
         bot.answerCallbackQuery(query.id);
     }
 
-    // --- User: Get Number Flow (Auto-Polling Integrated) ---
+    // --- User: Get Number Flow (Auto-Polling & Inbox Integrated) ---
     else if (data.startsWith('u_site_')) {
         const plat = data.split('u_site_')[1];
         const ranges = await loadRanges();
@@ -364,10 +385,13 @@ bot.on('callback_query', async (query) => {
             const res = await axios.post(`${BASE_URL}/api/v1/numbers/get`, { range: rangeVal, format: "international" }, { headers: HEADERS, timeout: 15000 });
             
             if (res.data.success) {
+                // Inbox এর জন্য ইউজারের ডাটা সেভ রাখা হলো
+                userLastOrder.set(chatId, { numId: res.data.number_id, phone: res.data.number, plat: plat, country: country });
+
                 const text = `✅ *Number Generated Successfully!*\n\n🌍 *Country:* ${country}\n📱 *Number:* \`${res.data.number}\`\n🌐 *Platform:* ${plat.toUpperCase()}\n\n⏳ _অটোমেটিক OTP চেক করা হচ্ছে... দয়া করে অপেক্ষা করুন।_`;
                 bot.editMessageText(text, { chat_id: chatId, message_id: sentMsg.message_id, parse_mode: 'Markdown' });
                 
-                // এখানে অটো-পোলিং শুরু হচ্ছে (ইউজারকে আর ক্লিক করতে হবে না)
+                // অটো-পোলিং শুরু
                 startOtpPolling(chatId, sentMsg.message_id, res.data.number_id, res.data.number, plat, country, query.from.first_name);
             } else {
                 bot.editMessageText("❌ *এই মুহূর্তে এই কান্ট্রির কোনো নাম্বার স্টকে নেই।*", { chat_id: chatId, message_id: sentMsg.message_id, parse_mode: 'Markdown' });
