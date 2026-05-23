@@ -4,24 +4,23 @@ const axios = require('axios');
 const admin = require('firebase-admin');
 const express = require('express');
 
-// --- ১. Render এর জন্য Express Server (যাতে হোস্টিং ডাউন না হয়) ---
+// --- ১. Render Express Server ---
 const app = express();
 const PORT = process.env.PORT || 3000;
-app.get('/', (req, res) => res.send('Fire OTP Bot is alive and kicking!'));
+app.get('/', (req, res) => res.send('Fire OTP Bot is alive!'));
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 
-// --- ২. Firebase Database কানেকশন ---
+// --- ২. Firebase Database ---
 admin.initializeApp({
   credential: admin.credential.cert({
     projectId: process.env.FIREBASE_PROJECT_ID,
     clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-    // Render এ প্রাইভেট কী এর নতুন লাইন (\n) ঠিক রাখার জন্য রেগুলার এক্সপ্রেশন ব্যবহার করা হয়েছে
     privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'),
   })
 });
 const db = admin.firestore();
 
-// --- ৩. কনফিগারেশন (Render এর Environment Variables থেকে আসবে) ---
+// --- ৩. কনফিগারেশন ---
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const API_KEY = process.env.API_KEY;
 const ADMIN_ID = parseInt(process.env.ADMIN_ID);
@@ -34,105 +33,145 @@ let adminState = {};
 // --- ৪. Firebase ডাটাবেস ফাংশন ---
 async function loadRanges() {
     const doc = await db.collection('bot_settings').doc('ranges').get();
-    if (!doc.exists) return { "Instagram": "", "Facebook": "", "Whatsapp": "", "Telegram": "" };
-    return doc.data();
+    if (!doc.exists) return {}; 
+    return doc.data(); // Format: { "Instagram": { range: "99298XXX", country: "🇧🇩 Bangladesh" } }
 }
 
 async function saveRanges(data) {
     await db.collection('bot_settings').doc('ranges').set(data);
 }
 
-// --- ৫. মেইন মেনু ডিজাইন (আপনার স্ক্রিনশটের মতো হুবহু লেআউট) ---
-const mainMenu = {
-    reply_markup: {
-        keyboard: [
-            [{ text: "📱 GET NUMBER" }, { text: "📊 TRAFFIC" }],
-            [{ text: "💰 BALANCE" }, { text: "💸 WITHDRAWAL" }],
-            [{ text: "🎁 REFER" }, { text: "🛠️ SUPPORT" }],
-            [{ text: "🔐 2FA ONLINE" }, { text: "👤 FAKE INFO" }],
-            [{ text: "🏆 LEADERBOARD" }]
-        ],
-        resize_keyboard: true
+async function loadForceSubs() {
+    const doc = await db.collection('bot_settings').doc('force_subs').get();
+    if (!doc.exists) return { channels: [] };
+    return doc.data();
+}
+
+async function saveForceSubs(channels) {
+    await db.collection('bot_settings').doc('force_subs').set({ channels });
+}
+
+// --- ৫. ডায়নামিক মেইন মেনু ---
+function getMainMenu(chatId) {
+    let kb = [
+        [{ text: "📱 GET NUMBER" }, { text: "📊 TRAFFIC" }],
+        [{ text: "🔐 2FA AUTHENTICATOR" }, { text: "👤 PROFILE INFO" }],
+        [{ text: "🎧 SUPPORT" }]
+    ];
+    // শুধু অ্যাডমিন হলে নিচের বাটনটি যোগ হবে
+    if (chatId === ADMIN_ID) {
+        kb.push([{ text: "🛠️ ADMIN PANEL" }]);
     }
-};
+    return { reply_markup: { keyboard: kb, resize_keyboard: true } };
+}
 
-// --- ৬. বটের মূল লজিক ও কমান্ডসমূহ ---
-bot.onText(/\/start/, (msg) => {
-    bot.sendMessage(msg.chat.id, "《 👑 FIRE OTP BOT 👑 》\n\n👋 *WELCOME, " + msg.from.first_name + "!*\n\n📱 GET NUMBER - OTP SERVICE\n📊 TRAFFIC - CHECK TRAFFIC\n🔐 2FA ONLINE - AUTHENTICATOR\n👤 FAKE INFO - BD NAME\n🏆 LEADERBOARD - TOP USERS", { parse_mode: 'Markdown', ...mainMenu });
-});
+// --- ৬. ফোর্স সাবস্ক্রাইব চেকার ---
+async function checkForceSub(chatId) {
+    if (chatId === ADMIN_ID) return true; // অ্যাডমিনের জন্য বাইপাস
+    const subs = await loadForceSubs();
+    const channels = subs.channels;
+    if (!channels || channels.length === 0) return true;
 
-// অ্যাডমিন প্যানেল কমান্ড (শুধু আপনি দেখতে পাবেন)
-bot.onText(/\/admin/, async (msg) => {
-    if (msg.chat.id !== ADMIN_ID) return bot.sendMessage(msg.chat.id, "❌ *Access Denied!*", { parse_mode: 'Markdown' });
+    let isSubscribed = true;
+    let buttons = [];
 
-    const ranges = await loadRanges();
-    let inlineKeyboard = [];
-    let row = [];
+    for (let ch of channels) {
+        try {
+            const member = await bot.getChatMember(ch, chatId);
+            if (member.status === 'left' || member.status === 'kicked') {
+                isSubscribed = false;
+                buttons.push([{ text: `📢 Join Channel`, url: `https://t.me/${ch.replace('@', '')}` }]);
+            }
+        } catch (e) {
+            // যদি বট চ্যানেলে অ্যাডমিন না থাকে
+            console.log(`Error checking channel ${ch}:`, e.message);
+        }
+    }
+
+    if (!isSubscribed) {
+        buttons.push([{ text: "✅ Joined (Check Again)", callback_data: "check_joined" }]);
+        bot.sendMessage(chatId, "⚠️ *আমাদের বট ব্যবহার করতে হলে নিচের চ্যানেলগুলোতে জয়েন করা বাধ্যতামূলক!* \n\nজয়েন করে 'Joined' বাটনে ক্লিক করুন:", {
+            parse_mode: 'Markdown',
+            reply_markup: { inline_keyboard: buttons }
+        });
+        return false;
+    }
+    return true;
+}
+
+// --- ৭. বটের কমান্ড ও লজিক ---
+bot.onText(/\/start/, async (msg) => {
+    const chatId = msg.chat.id;
+    if (!(await checkForceSub(chatId))) return;
     
-    for (const [plat, rg] of Object.entries(ranges)) {
-        const status = rg ? "✅" : "❌";
-        row.push({ text: `${status} ${plat}`, callback_data: `setrange_${plat}` });
-        if (row.length === 2) { inlineKeyboard.push(row); row = []; }
-    }
-    if (row.length > 0) inlineKeyboard.push(row);
-    inlineKeyboard.push([{ text: "➕ Add New Platform", callback_data: "add_platform" }]);
-
-    bot.sendMessage(msg.chat.id, "🛠 *Admin Panel*\n\nপ্ল্যাটফর্মের ওপর ক্লিক করে রেঞ্জ সেট বা আপডেট করুন:", {
-        parse_mode: 'Markdown',
-        reply_markup: { inline_keyboard: inlineKeyboard }
+    bot.sendMessage(chatId, "《 👑 FIRE OTP BOT 👑 》\n\n👋 *WELCOME, " + msg.from.first_name + "!*", { 
+        parse_mode: 'Markdown', 
+        ...getMainMenu(chatId) 
     });
 });
 
-// টেক্সট মেসেজ ও বাটন হ্যান্ডলার
+// মেইন টেক্সট মেসেজ হ্যান্ডলার
 bot.on('message', async (msg) => {
     const chatId = msg.chat.id;
     const text = msg.text;
     if (!text || text.startsWith('/')) return;
 
-    // অ্যাডমিন যখন নতুন রেঞ্জ বা প্ল্যাটফর্মের নাম টাইপ করবে
+    // --- অ্যাডমিন স্টেট ম্যানেজমেন্ট (ইনপুট নেওয়া) ---
     if (adminState[chatId]) {
         const state = adminState[chatId];
-        const ranges = await loadRanges();
         
-        if (state.action === 'wait_range') {
-            ranges[state.platform] = text.trim();
+        if (state.action === 'wait_country') {
+            state.country = text.trim();
+            state.action = 'wait_range';
+            bot.sendMessage(chatId, `✅ কান্ট্রি সেট হলো: ${state.country}\n\n✏️ এবার \`${state.platform}\` এর জন্য রেঞ্জ টাইপ করুন (যেমন: 22507XXX):`, { parse_mode: 'Markdown' });
+            return;
+        } 
+        else if (state.action === 'wait_range') {
+            const ranges = await loadRanges();
+            ranges[state.platform] = { country: state.country, range: text.trim() };
             await saveRanges(ranges);
-            bot.sendMessage(chatId, `✅ *${state.platform}* এর নতুন রেঞ্জ সফলভাবে সেট করা হয়েছে।`, { parse_mode: 'Markdown' });
+            bot.sendMessage(chatId, `✅ *${state.platform}* এর রেঞ্জ সফলভাবে আপডেট হয়েছে!`, { parse_mode: 'Markdown' });
             delete adminState[chatId];
             return;
-        } else if (state.action === 'wait_platform') {
-            const newPlat = text.trim();
-            if (!ranges[newPlat]) {
-                ranges[newPlat] = "";
-                await saveRanges(ranges);
+        } 
+        else if (state.action === 'wait_channel_add') {
+            const subs = await loadForceSubs();
+            let channels = subs.channels;
+            if (!channels.includes(text.trim())) {
+                channels.push(text.trim());
+                await saveForceSubs(channels);
             }
-            bot.sendMessage(chatId, `✅ *${newPlat}* প্ল্যাটফর্মটি যুক্ত হয়েছে। এবার /admin দিয়ে রেঞ্জ সেট করুন।`, { parse_mode: 'Markdown' });
+            bot.sendMessage(chatId, `✅ চ্যানেল ${text.trim()} যুক্ত হয়েছে! (বটকে ওই চ্যানেলে অ্যাডমিন বানাতে ভুলবেন না)`, { parse_mode: 'Markdown' });
+            delete adminState[chatId];
+            return;
+        }
+        else if (state.action === 'wait_channel_remove') {
+            const subs = await loadForceSubs();
+            let channels = subs.channels.filter(ch => ch !== text.trim());
+            await saveForceSubs(channels);
+            bot.sendMessage(chatId, `🗑️ চ্যানেল ${text.trim()} রিমুভ করা হয়েছে!`, { parse_mode: 'Markdown' });
             delete adminState[chatId];
             return;
         }
     }
 
-    // ইউজার যখন মেনু বাটনে ক্লিক করবে
-    if (text === "💰 BALANCE") {
-        const sentMsg = await bot.sendMessage(chatId, "⏳ *Checking balance...*", { parse_mode: 'Markdown' });
-        try {
-            const res = await axios.get(`${BASE_URL}/api/v1/balance`, { headers: HEADERS, timeout: 10000 });
-            if (res.data.success) {
-                bot.editMessageText(`💰 *Account Balance:* \`${res.data.balance}\` ৳`, { chat_id: chatId, message_id: sentMsg.message_id, parse_mode: 'Markdown' });
-            } else {
-                bot.editMessageText("❌ *Failed to load balance.*", { chat_id: chatId, message_id: sentMsg.message_id, parse_mode: 'Markdown' });
-            }
-        } catch (error) {
-            bot.editMessageText("⚠️ *API Error.*", { chat_id: chatId, message_id: sentMsg.message_id, parse_mode: 'Markdown' });
-        }
-    } else if (text === "📱 GET NUMBER") {
+    if (!(await checkForceSub(chatId))) return;
+
+    // --- ইউজার মেনু বাটন ---
+    if (text === "🛠️ ADMIN PANEL" && chatId === ADMIN_ID) {
+        let markup = { inline_keyboard: [
+            [{ text: "⚙️ Manage Ranges", callback_data: "admin_ranges" }],
+            [{ text: "📢 Force Sub Settings", callback_data: "admin_force" }]
+        ]};
+        bot.sendMessage(chatId, "🛠 *Admin Panel*\n\nনিচের অপশনগুলো ম্যানেজ করুন:", { parse_mode: 'Markdown', reply_markup: markup });
+    }
+    else if (text === "📱 GET NUMBER") {
         const ranges = await loadRanges();
         let inlineKeyboard = [];
         let row = [];
         
-        // শুধুমাত্র যেগুলোর রেঞ্জ অ্যাডমিন সেট করেছে সেগুলোই ইউজার দেখতে পাবে (রেঞ্জ হাইড থাকবে)
-        for (const [plat, rg] of Object.entries(ranges)) {
-            if (rg) {
+        for (const [plat, data] of Object.entries(ranges)) {
+            if (data && data.range) {
                 row.push({ text: `💬 🟢 ${plat.toUpperCase()} 🟢`, callback_data: `getnum_${plat}` });
                 if (row.length === 2) { inlineKeyboard.push(row); row = []; }
             }
@@ -140,59 +179,104 @@ bot.on('message', async (msg) => {
         if (row.length > 0) inlineKeyboard.push(row);
 
         if (inlineKeyboard.length === 0) {
-            return bot.sendMessage(chatId, "⚠️ *এই মুহূর্তে কোনো নাম্বার স্টকে নেই। একটু পর চেষ্টা করুন।*", { parse_mode: 'Markdown' });
+            return bot.sendMessage(chatId, "⚠️ *এই মুহূর্তে কোনো নাম্বার স্টকে নেই।*", { parse_mode: 'Markdown' });
         }
         bot.sendMessage(chatId, "📌 *Select a Platform:*", { parse_mode: 'Markdown', reply_markup: { inline_keyboard: inlineKeyboard } });
-    } else if (["📊 TRAFFIC", "💸 WITHDRAWAL", "🎁 REFER", "🛠️ SUPPORT", "🔐 2FA ONLINE", "👤 FAKE INFO", "🏆 LEADERBOARD"].includes(text)) {
+    } 
+    else if (["📊 TRAFFIC", "🔐 2FA AUTHENTICATOR", "👤 PROFILE INFO", "🎧 SUPPORT"].includes(text)) {
         bot.sendMessage(chatId, "🛠️ *This feature is under development...*", { parse_mode: 'Markdown' });
     }
 });
 
-// ইনলাইন বাটন ক্লিকের হ্যান্ডলার (Callback Queries)
+// --- ৮. কলব্যাক কোয়েরি (ইনলাইন বাটন) ---
 bot.on('callback_query', async (query) => {
     const chatId = query.message.chat.id;
     const data = query.data;
     const msgId = query.message.message_id;
 
-    if (data.startswith('setrange_')) {
-        if (chatId !== ADMIN_ID) return;
-        const plat = data.split('_')[1];
-        adminState[chatId] = { action: 'wait_range', platform: plat };
-        bot.sendMessage(chatId, `✏️ \`${plat}\` এর জন্য নতুন রেঞ্জটি টাইপ করে পাঠান (যেমন: 2250787672XXX):`, { parse_mode: 'Markdown' });
-        bot.answerCallbackQuery(query.id);
-    } 
-    else if (data === 'add_platform') {
-        if (chatId !== ADMIN_ID) return;
-        adminState[chatId] = { action: 'wait_platform' };
-        bot.sendMessage(chatId, "✏️ নতুন প্ল্যাটফর্মের নাম টাইপ করে পাঠান (যেমন: Google):");
+    if (data === "check_joined") {
+        if (await checkForceSub(chatId)) {
+            bot.deleteMessage(chatId, msgId);
+            bot.sendMessage(chatId, "✅ *ধন্যবাদ!* আপনি সফলভাবে জয়েন করেছেন।", { parse_mode: 'Markdown', ...getMainMenu(chatId) });
+        } else {
+            bot.answerCallbackQuery(query.id, { text: "⚠️ আপনি এখনও সব চ্যানেলে জয়েন করেননি!", show_alert: true });
+        }
+    }
+
+    // --- অ্যাডমিন প্যানেল নেভিগেশন ---
+    else if (data === "admin_ranges" && chatId === ADMIN_ID) {
+        const ranges = await loadRanges();
+        let inlineKeyboard = [];
+        let row = [];
+        const platforms = ["Instagram", "Facebook", "Whatsapp", "Telegram", "Google"]; // ডিফল্ট কিছু সাইট
+        
+        for (const plat of platforms) {
+            const status = (ranges[plat] && ranges[plat].range) ? "✅" : "❌";
+            row.push({ text: `${status} ${plat}`, callback_data: `setrange_${plat}` });
+            if (row.length === 2) { inlineKeyboard.push(row); row = []; }
+        }
+        if (row.length > 0) inlineKeyboard.push(row);
+        bot.editMessageText("⚙️ *Manage Ranges*\n\nরেঞ্জ সেট করতে সাইটে ক্লিক করুন:", { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown', reply_markup: { inline_keyboard: inlineKeyboard }});
+    }
+    else if (data === "admin_force" && chatId === ADMIN_ID) {
+        const subs = await loadForceSubs();
+        let text = "📢 *Force Sub Channels:*\n";
+        subs.channels.forEach(c => text += `▪️ ${c}\n`);
+        if(subs.channels.length === 0) text += "None";
+        
+        let markup = { inline_keyboard: [
+            [{ text: "➕ Add Channel", callback_data: "force_add" }, { text: "➖ Remove Channel", callback_data: "force_remove" }]
+        ]};
+        bot.editMessageText(text, { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown', reply_markup: markup });
+    }
+    else if (data === "force_add" && chatId === ADMIN_ID) {
+        adminState[chatId] = { action: 'wait_channel_add' };
+        bot.sendMessage(chatId, "✏️ চ্যানেলের ইউজারনেম দিন (যেমন: @mychannel):");
         bot.answerCallbackQuery(query.id);
     }
-    else if (data.startswith('getnum_')) {
+    else if (data === "force_remove" && chatId === ADMIN_ID) {
+        adminState[chatId] = { action: 'wait_channel_remove' };
+        bot.sendMessage(chatId, "✏️ যে চ্যানেলটি রিমুভ করতে চান তার ইউজারনেম দিন:");
+        bot.answerCallbackQuery(query.id);
+    }
+    else if (data.startsWith('setrange_') && chatId === ADMIN_ID) {
+        const plat = data.split('_')[1];
+        adminState[chatId] = { action: 'wait_country', platform: plat };
+        bot.sendMessage(chatId, `✏️ \`${plat}\` এর জন্য কান্ট্রির নাম ও ফ্ল্যাগ দিন (যেমন: 🇧🇩 Bangladesh):`, { parse_mode: 'Markdown' });
+        bot.answerCallbackQuery(query.id);
+    }
+
+    // --- ইউজার নাম্বার জেনারেট ---
+    else if (data.startsWith('getnum_')) {
         const plat = data.split('_')[1];
         const ranges = await loadRanges();
-        const targetRange = ranges[plat];
+        const targetData = ranges[plat];
 
-        if (!targetRange) return bot.answerCallbackQuery(query.id, { text: "❌ রেঞ্জ সেট করা নেই!", show_alert: true });
+        if (!targetData || !targetData.range) return bot.answerCallbackQuery(query.id, { text: "❌ রেঞ্জ সেট করা নেই!", show_alert: true });
 
         bot.deleteMessage(chatId, msgId);
         const sentMsg = await bot.sendMessage(chatId, "⏳ *Generating Number...*", { parse_mode: 'Markdown' });
 
         try {
-            // format: international দেওয়া হয়েছে যাতে কান্ট্রি কোড সহ ফুল নাম্বার আসে
-            const res = await axios.post(`${BASE_URL}/api/v1/numbers/get`, { range: targetRange, format: "international" }, { headers: HEADERS, timeout: 15000 });
+            const res = await axios.post(`${BASE_URL}/api/v1/numbers/get`, { range: targetData.range, format: "international" }, { headers: HEADERS, timeout: 15000 });
             if (res.data.success) {
                 const markup = { inline_keyboard: [[{ text: "📩 Check OTP", callback_data: `checkotp_${res.data.number_id}` }]] };
-                const text = `✅ *Number Generated Successfully!*\n\n📱 *Number:* \`${res.data.number}\`\n🌐 *Platform:* ${plat.toUpperCase()}\n\n_Waiting for OTP... Click 'Check OTP' below._`;
+                
+                // কান্ট্রির নাম ও ফ্ল্যাগ যোগ করা হয়েছে
+                const text = `✅ *Number Generated Successfully!*\n\n🌍 *Country:* ${targetData.country}\n📱 *Number:* \`${res.data.number}\`\n🌐 *Platform:* ${plat.toUpperCase()}\n\n_Waiting for OTP... Click 'Check OTP' below._`;
+                
                 bot.editMessageText(text, { chat_id: chatId, message_id: sentMsg.message_id, parse_mode: 'Markdown', reply_markup: markup });
             } else {
                 bot.editMessageText("❌ *এই মুহূর্তে এই রেঞ্জের কোনো নাম্বার স্টকে নেই।*", { chat_id: chatId, message_id: sentMsg.message_id, parse_mode: 'Markdown' });
             }
         } catch (error) {
-            bot.editMessageText("⚠️ *API সার্ভার রেসপন্স করছে না।*", { chat_id: chatId, message_id: sentMsg.message_id, parse_mode: 'Markdown' });
+            bot.editMessageText("⚠️ *API সার্ভার এরর।*", { chat_id: chatId, message_id: sentMsg.message_id, parse_mode: 'Markdown' });
         }
         bot.answerCallbackQuery(query.id);
     }
-    else if (data.startswith('checkotp_')) {
+    
+    // --- OTP চেক ---
+    else if (data.startsWith('checkotp_')) {
         const numId = data.split('_')[1];
         bot.answerCallbackQuery(query.id, { text: "Checking OTP..." });
 
@@ -200,22 +284,20 @@ bot.on('callback_query', async (query) => {
             const res = await axios.get(`${BASE_URL}/api/v1/numbers/${numId}/sms`, { headers: HEADERS, timeout: 10000 });
             if (res.data.success) {
                 if (res.data.otp) {
-                    // OTP টি মনস্পেস ব্যাকটিকে দেওয়া হয়েছে, কোডের ওপর ক্লিক করলেই অটো কপি হবে
-                    bot.sendMessage(chatId, `🎉 *Your OTP Code:* \`${res.data.otp}\`\n\n_(কোডটি কপি করতে এর ওপর ক্লিক করুন)_`, { parse_mode: 'Markdown' });
+                    bot.sendMessage(chatId, `🎉 *Your OTP Code:* \`${res.data.otp}\``, { parse_mode: 'Markdown' });
                     bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: msgId });
                 } else if (res.data.status === 'pending') {
-                    bot.answerCallbackQuery(query.id, { text: "⏳ এখনও OTP আসেনি। দয়া করে একটু অপেক্ষা করে আবার চেষ্টা করুন।", show_alert: true });
+                    bot.answerCallbackQuery(query.id, { text: "⏳ এখনও OTP আসেনি...", show_alert: true });
                 } else {
-                    bot.answerCallbackQuery(query.id, { text: "⚠️ কোনো OTP পাওয়া যায়নি বা সেশন শেষ।", show_alert: true });
+                    bot.answerCallbackQuery(query.id, { text: "⚠️ OTP পাওয়া যায়নি।", show_alert: true });
                 }
             } else {
-                bot.answerCallbackQuery(query.id, { text: "⚠️ এই নাম্বারের সেশনটি এক্সপায়ার হয়ে গেছে।", show_alert: true });
+                bot.answerCallbackQuery(query.id, { text: "⚠️ সেশন এক্সপায়ার হয়ে গেছে।", show_alert: true });
             }
         } catch (error) {
-            bot.answerCallbackQuery(query.id, { text: "⚠️ সার্ভার কানেকশন ত্রুটি।", show_alert: true });
+            bot.answerCallbackQuery(query.id, { text: "⚠️ সার্ভার ত্রুটি।", show_alert: true });
         }
     }
 });
 
-console.log("Firebase & Express Core Bot is ready for Render!");
-
+console.log("Ultimate Pro Bot is Ready!");
