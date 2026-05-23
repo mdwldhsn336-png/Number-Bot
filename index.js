@@ -177,8 +177,8 @@ function startOtpPolling(chatId, msgId, numId, phone, plat, country, userFirstNa
                 const copyFullText = `Platform: ${platName}\nCountry: ${country}\nNumber: ${phone}\nOTP: ${otpCode}`;
                 const replyMarkup = {
                     inline_keyboard: [
-                        [{ text: `📋 🗑️ ${otpCode}`, copy_text: { text: otpCode } }],
-                        [{ text: `📋 📄 Copy Full Message`, copy_text: { text: copyFullText } }],
+                        [{ text: `📋  ${otpCode}`, copy_text: { text: otpCode } }],
+                        [{ text: `📋  Copy Full Message`, copy_text: { text: copyFullText } }],
                         [{ text: "💬 OTP Group", url: `https://t.me/${OTP_GROUP_ID.replace('@', '')}` }]
                     ]
                 };
@@ -358,8 +358,8 @@ bot.on('message', async (msg) => {
                 
                 const replyMarkup = {
                     inline_keyboard: [
-                        [{ text: `📋 🗑️ ${res.data.otp}`, copy_text: { text: res.data.otp } }],
-                        [{ text: `📋 📄 Copy Full Message`, copy_text: { text: `Platform: ${platName}\nCountry: ${lastOrder.country}\nNumber: ${lastOrder.phone}\nOTP: ${res.data.otp}` } }]
+                        [{ text: `📋  ${res.data.otp}`, copy_text: { text: res.data.otp } }],
+                        [{ text: `📋  Copy Full Message`, copy_text: { text: `Platform: ${platName}\nCountry: ${lastOrder.country}\nNumber: ${lastOrder.phone}\nOTP: ${res.data.otp}` } }]
                     ]
                 };
                 bot.editMessageText(`📥 *Latest Inbox Found:*\n\n${icon} *${platName} OTP:*\n\`${res.data.otp}\``, { chat_id: chatId, message_id: sentMsg.message_id, parse_mode: 'Markdown', reply_markup: replyMarkup });
