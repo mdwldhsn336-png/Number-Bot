@@ -8,7 +8,7 @@ const { authenticator } = require('otplib');
 // --- ১. Render Express Server ---
 const app = express();
 const PORT = process.env.PORT || 3000;
-app.get('/', (req, res) => res.send('Premium Fire OTP Bot v4.0 is Running!'));
+app.get('/', (req, res) => res.send('Premium Fire OTP Bot v5.0 is Running!'));
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 
 // --- ২. Firebase Database Setup ---
@@ -36,14 +36,15 @@ const activePolls = new Map();
 const deliveredOtps = new Set(); // ডাবল মেসেজ ব্লক করার জন্য
 
 // --- ৪. ডাটাবেস ফাংশনসমূহ ---
+
 async function ensureUser(user) {
-    if (!user) return;
+    if (!user || !user.id) return;
     try {
         const docRef = db.collection('users').doc(String(user.id));
         const doc = await docRef.get();
         if (!doc.exists) {
             await docRef.set({ 
-                first_name: user.first_name, 
+                first_name: user.first_name || 'User', 
                 username: user.username || 'N/A',
                 total_numbers: 0, 
                 total_otps: 0, 
@@ -161,10 +162,10 @@ function getAdminMenu() {
     };
 }
 
-// --- ৬. অটো-পোলিং ফাংশন (ডাবল মেসেজ ফিক্সড) ---
+// --- ৬. অটো-পোলিং ও সেপারেট OTP মেসেজ ফাংশন ---
 function startOtpPolling(chatId, msgId, numId, phone, plat, country, userFirstName, attempt = 0) {
-    if (!activePolls.has(numId)) return; // যদি ইউজার Change Number এ ক্লিক করে থাকে
-    if (deliveredOtps.has(numId)) return; // যদি অলরেডি ডেলিভার হয়ে থাকে
+    if (!activePolls.has(numId)) return; 
+    if (deliveredOtps.has(numId)) return; 
 
     setTimeout(async () => {
         if (!activePolls.has(numId) || deliveredOtps.has(numId)) return;
@@ -173,55 +174,66 @@ function startOtpPolling(chatId, msgId, numId, phone, plat, country, userFirstNa
             const res = await axios.get(`${BASE_URL}/api/v1/numbers/${numId}/sms`, { headers: HEADERS });
             
             if (res.data.success && res.data.otp) {
-                if (deliveredOtps.has(numId)) return; // ডাবল চেকিং লক
+                if (deliveredOtps.has(numId)) return; 
                 deliveredOtps.add(numId);
                 activePolls.delete(numId);
                 
                 const otpCode = res.data.otp;
-                const icon = getPlatIcon(plat);
                 const platName = plat.charAt(0).toUpperCase() + plat.slice(1);
                 const formatPhone = phone.startsWith('+') ? phone : '+' + phone;
                 
-                // User Message Design
-                const userText = `🌍 *Country:* ${country}\n\n╔════════════════════╗\n║ 📱 \`${formatPhone}\`\n╚════════════════════╝\n\n${icon} *${platName} OTP:*\n\`${otpCode}\``;
+                const boxNumber = `╔════════════════════╗\n║ 📱 \`${formatPhone}\`\n╚════════════════════╝`;
+                
+                // ১. প্রথম Generating মেসেজটি আপডেট হয়ে Success দেখাবে
+                const successText = `✅ *Number Generated!*\n\n🌍 *Country:* ${country}\n\n${boxNumber}`;
+                bot.editMessageText(successText, { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown' }).catch(()=>{});
+
+                // ২. সম্পূর্ণ আলাদা নতুন OTP মেসেজ (ইউজারের জন্য)
+                const copyFullText = `Platform: ${platName}\nCountry: ${country}\nNumber: ${formatPhone}\nOTP: ${otpCode}`;
                 const userMarkup = {
                     inline_keyboard: [
-                        [{ text: `📋 🗑️ ${otpCode}`, copy_text: { text: otpCode } }],
+                        [{ text: `📋  ${otpCode}`, copy_text: { text: otpCode } }],
+                        [{ text: `📋  Copy Full Message`, copy_text: { text: copyFullText } }],
                         [{ text: "💬 OTP Group", url: `https://t.me/${OTP_GROUP_ID.replace('@', '')}` }]
                     ]
                 };
                 
-                // আগের Generating মেসেজটা এডিট হবে (নতুন মেসেজ আসবে না)
-                bot.editMessageText(userText, { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown', reply_markup: userMarkup }).catch(()=>{});
+                // এখানে মার্ক করা কোনো এক্সট্রা টেক্সট নেই, শুধু কান্ট্রি আর বক্স
+                const newOtpMsg = `🌍 *Country:* ${country}\n\n${boxNumber}`;
+                bot.sendMessage(chatId, newOtpMsg, { parse_mode: 'Markdown', reply_markup: userMarkup });
                 
                 // Stats Update
                 updateTraffic(plat, country);
                 updateUserStat(chatId, 'otp');
                 updateGlobalStats('success');
 
-                // Group Message Design (Group Link Removed)
+                // ৩. গ্রুপে মেসেজ পাঠানো (হাইড নাম্বার দিয়ে, শুধু কান্ট্রি আর বক্স)
                 const maskedPhone = maskNumber(phone);
-                const groupText = `🌍 *Country:* ${country}\n\n╔════════════════════╗\n║ 📱 \`${maskedPhone}\`\n╚════════════════════╝\n\n${icon} *${platName} OTP:*\n\`${otpCode}\`\n👤 *User:* ${userFirstName}`;
+                const groupBoxNumber = `╔════════════════════╗\n║ 📱 \`${maskedPhone}\`\n╚════════════════════╝`;
+                
                 const groupMarkup = {
                     inline_keyboard: [
-                        [{ text: `📋 🗑️ ${otpCode}`, copy_text: { text: otpCode } }]
+                        [{ text: `📋  ${otpCode}`, copy_text: { text: otpCode } }],
+                        [{ text: `📋  Copy Full Message`, copy_text: { text: copyFullText } }]
                     ]
                 };
+                const groupText = `🌍 *Country:* ${country}\n\n${groupBoxNumber}\n\n👤 *User:* ${userFirstName}`;
                 bot.sendMessage(OTP_GROUP_ID, groupText, { parse_mode: 'Markdown', reply_markup: groupMarkup }).catch(()=>{});
                 
                 return;
             }
         } catch (err) {}
 
-        if (attempt >= 90) { // ৩ মিনিট (৯০ বার)
+        if (attempt >= 90) { // ৩ মিনিট টাইমআউট
             activePolls.delete(numId);
             updateGlobalStats('failed');
-            const failText = `⚠️ *OTP Timeout!*\n\n🌍 *Country:* ${country}\n\n╔════════════════════╗\n║ 📱 \`${phone}\`\n╚════════════════════╝\n\n_৩ মিনিটের মধ্যে কোনো OTP আসেনি। Change Number এ ক্লিক করে নতুন নাম্বার নিন।_`;
+            const formatPhone = phone.startsWith('+') ? phone : '+' + phone;
+            const failText = `⚠️ *OTP Timeout!*\n\n🌍 *Country:* ${country}\n\n╔════════════════════╗\n║ 📱 \`${formatPhone}\`\n╚════════════════════╝\n\n_৩ মিনিটের মধ্যে কোনো OTP আসেনি। Change Number এ ক্লিক করে নতুন নাম্বার নিন।_`;
             bot.editMessageText(failText, { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown' }).catch(()=>{});
             return;
         }
 
-        // লুপ চালিয়ে যাওয়া
+        // লুপ কন্টিনিউ
         if (activePolls.has(numId)) {
             startOtpPolling(chatId, msgId, numId, phone, plat, country, userFirstName, attempt + 1);
         }
@@ -380,17 +392,20 @@ bot.on('message', async (msg) => {
         try {
             const res = await axios.get(`${BASE_URL}/api/v1/numbers/${lastOrder.numId}/sms`, { headers: HEADERS, timeout: 5000 });
             if (res.data.success && res.data.otp) {
-                const icon = getPlatIcon(lastOrder.plat);
                 const platName = lastOrder.plat.charAt(0).toUpperCase() + lastOrder.plat.slice(1);
+                const formatPhone = lastOrder.phone.startsWith('+') ? lastOrder.phone : '+' + lastOrder.phone;
+                const boxNumber = `╔════════════════════╗\n║ 📱 \`${formatPhone}\`\n╚════════════════════╝`;
                 
-                const boxNumber = `╔════════════════════╗\n║ 📱 \`${lastOrder.phone}\`\n╚════════════════════╝`;
                 const replyMarkup = {
                     inline_keyboard: [
-                        [{ text: `📋 🗑️ ${res.data.otp}`, copy_text: { text: res.data.otp } }],
-                        [{ text: "💬 OTP Group", url: `https://t.me/${OTP_GROUP_ID.replace('@', '')}` }]
+                        [{ text: `📋  ${res.data.otp}`, copy_text: { text: res.data.otp } }],
+                        [{ text: `📋  Copy Full Message`, copy_text: { text: `Platform: ${platName}\nCountry: ${lastOrder.country}\nNumber: ${formatPhone}\nOTP: ${res.data.otp}` } }]
                     ]
                 };
-                bot.editMessageText(`📥 *Latest Inbox Found:*\n\n🌍 *Country:* ${lastOrder.country}\n\n${boxNumber}\n\n${icon} *${platName} OTP:*\n\`${res.data.otp}\``, { chat_id: chatId, message_id: sentMsg.message_id, parse_mode: 'Markdown', reply_markup: replyMarkup });
+                
+                // ইনবক্সের মেসেজও সেইম ক্লিনার লেআউটে আসবে
+                const inboxText = `📥 *Latest Inbox Found:*\n\n🌍 *Country:* ${lastOrder.country}\n\n${boxNumber}`;
+                bot.editMessageText(inboxText, { chat_id: chatId, message_id: sentMsg.message_id, parse_mode: 'Markdown', reply_markup: replyMarkup });
             } else {
                 bot.editMessageText("⚠️ *OTP Not Found!*\n\n_Still waiting or session expired._", { chat_id: chatId, message_id: sentMsg.message_id, parse_mode: 'Markdown' });
             }
@@ -409,7 +424,8 @@ bot.on('message', async (msg) => {
         });
         bot.sendMessage(chatId, msgText, { parse_mode: 'Markdown' });
     }
-    else if (text === "👤 PROFILE INFO" || text.includes("PROFILE INFO")) {
+    // Profile Option Fully Fixed
+    else if (text.includes("PROFILE INFO")) {
         try {
             const stats = await getUserStats(chatId);
             const p = msg.from;
@@ -423,7 +439,7 @@ bot.on('message', async (msg) => {
                                 `_Keep enjoying the premium service!_`;
             bot.sendMessage(chatId, profileText, { parse_mode: 'Markdown' });
         } catch(e) {
-            bot.sendMessage(chatId, "⚠️ Profile loading error. Try again later.");
+            bot.sendMessage(chatId, "⚠️ *Profile loading error.* Try again.", { parse_mode: 'Markdown' });
         }
     }
     else if (text === "🔐 2FA AUTHENTICATOR") {
@@ -653,7 +669,6 @@ bot.on('callback_query', async (query) => {
                 updateUserStat(chatId, 'number');
                 updateGlobalStats('pending');
 
-                const icon = getPlatIcon(plat);
                 const formatPhone = res.data.number.startsWith('+') ? res.data.number : '+' + res.data.number;
                 
                 // ডাবল লাইন বক্স ডিজাইন
@@ -663,13 +678,14 @@ bot.on('callback_query', async (query) => {
                 
                 const actionMarkup = {
                     inline_keyboard: [
-                        [{ text: "🔄 Fetch OTP", callback_data: `fetch_otp_${res.data.number_id}` }, { text: "❌ Change Number", callback_data: "change_num" }]
+                        [{ text: "🔄 Fetch OTP", callback_data: `fetch_otp_${res.data.number_id}` }, { text: "❌ Change Number", callback_data: "change_num" }],
+                        [{ text: "💬 OTP Group", url: `https://t.me/${OTP_GROUP_ID.replace('@', '')}` }]
                     ]
                 };
                 
                 bot.editMessageText(text, { chat_id: chatId, message_id: sentMsg.message_id, parse_mode: 'Markdown', reply_markup: actionMarkup });
                 
-                // Start Polling Lock System
+                // Start Strict Polling Lock System
                 activePolls.set(res.data.number_id, true);
                 startOtpPolling(chatId, sentMsg.message_id, res.data.number_id, res.data.number, plat, country, query.from.first_name);
             } else {
@@ -692,7 +708,7 @@ bot.on('callback_query', async (query) => {
         try {
             const res = await axios.get(`${BASE_URL}/api/v1/numbers/${numId}/sms`, { headers: HEADERS, timeout: 5000 });
             if (res.data.success && res.data.otp) {
-                // পোলিং নিজে থেকেই ক্যাচ করবে এবং এডিট করবে
+                // পোলিং নিজে থেকেই ক্যাচ করবে
             } else {
                 bot.answerCallbackQuery(query.id, { text: "⚠️ OTP Not Found! Auto-checking continues...", show_alert: true });
             }
@@ -700,4 +716,4 @@ bot.on('callback_query', async (query) => {
     }
 });
 
-console.log("Ultimate Premium BOT v4.0 is Alive & Fully Functional!");
+console.log("Ultimate Premium BOT v5.0 is Alive & Fully Functional!");
