@@ -8,7 +8,7 @@ const { authenticator } = require('otplib');
 // --- ১. Render Express Server ---
 const app = express();
 const PORT = process.env.PORT || 3000;
-app.get('/', (req, res) => res.send('Premium Fire OTP Bot v2.0 is Running!'));
+app.get('/', (req, res) => res.send('Premium Fire OTP Bot v3.0 is Running!'));
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 
 // --- ২. Firebase Database Setup ---
@@ -32,12 +32,13 @@ const HEADERS = { 'X-API-Key': API_KEY };
 const bot = new TelegramBot(BOT_TOKEN, { polling: true });
 let adminState = {};
 const userLastOrder = new Map();
-const activePolls = new Map();
+const activePolls = new Map(); // লুপ বন্ধ করার জন্য পোল ট্র্যাকার
 
 // --- ৪. ডাটাবেস ফাংশনসমূহ ---
 
 // User Tracking & Profile Stats
-async function registerUser(user) {
+async function ensureUser(user) {
+    if (!user) return;
     const docRef = db.collection('users').doc(String(user.id));
     const doc = await docRef.get();
     if (!doc.exists) {
@@ -130,7 +131,7 @@ function getPlatIcon(plat) {
     if(p.includes('tiktok')) return '🎵';
     if(p.includes('snap')) return '👻';
     if(p.includes('x') || p.includes('twitter')) return '🐦';
-    return '💬'; // Default
+    return '💬'; 
 }
 
 function getMainMenu(chatId) {
@@ -154,10 +155,16 @@ function getAdminMenu() {
     };
 }
 
-// --- ৬. অটো-পোলিং ও OTP ফাংশন ---
+// --- ৬. অটো-পোলিং ও OTP ফাংশন (লুপ ফিক্সড) ---
 function startOtpPolling(chatId, msgId, numId, phone, plat, country, userFirstName) {
+    // যদি আগে থেকেই এই নাম্বারের পোলিং চলে, তবে ডুপ্লিকেট পোলিং বন্ধ করবে
+    if (activePolls.has(numId)) {
+        clearInterval(activePolls.get(numId));
+        activePolls.delete(numId);
+    }
+
     let attempts = 0;
-    const maxAttempts = 90; // ৩ মিনিট
+    const maxAttempts = 90; // ৩ মিনিট (৯০ বার x ২ সেকেন্ড)
 
     const interval = setInterval(async () => {
         try {
@@ -170,30 +177,44 @@ function startOtpPolling(chatId, msgId, numId, phone, plat, country, userFirstNa
                 
                 const icon = getPlatIcon(plat);
                 const platName = plat.charAt(0).toUpperCase() + plat.slice(1);
+                const formatPhone = phone.startsWith('+') ? phone : '+' + phone;
                 
-                const text = `✅ *OTP Successfully Received!*\n\n🌍 *Country:* ${country}\n🌐 *Platform:* ${icon} ${platName}\n\n══════════════════\n📱 *Number:* \`${phone}\`\n══════════════════`;
+                // আগের মেসেজ সাকসেস করা
+                const text = `✅ *Number Generated & OTP Received!*\n\n🌍 *Country:* ${country}\n🌐 *Platform:* ${icon} ${platName}`;
                 bot.editMessageText(text, { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown' });
 
-                const copyFullText = `Platform: ${platName}\nCountry: ${country}\nNumber: ${phone}\nOTP: ${otpCode}`;
-                const replyMarkup = {
+                // ডাবল লাইন বক্স ডিজাইন
+                const boxNumber = `╔════════════════════╗\n║ 📱 \`${formatPhone}\`\n╚════════════════════╝`;
+                
+                // ইউজারের কাছে বাটনসহ মেসেজ
+                const copyFullText = `Platform: ${platName}\nCountry: ${country}\nNumber: ${formatPhone}\nOTP: ${otpCode}`;
+                const userMarkup = {
                     inline_keyboard: [
-                        [{ text: `📋  ${otpCode}`, copy_text: { text: otpCode } }],
-                        [{ text: `📋  Copy Full Message`, copy_text: { text: copyFullText } }],
+                        [{ text: `📋 🗑️ ${otpCode}`, copy_text: { text: otpCode } }],
+                        [{ text: `📋 📄 Copy Full Message`, copy_text: { text: copyFullText } }],
                         [{ text: "💬 OTP Group", url: `https://t.me/${OTP_GROUP_ID.replace('@', '')}` }]
                     ]
                 };
-
-                bot.sendMessage(chatId, `${icon} *${platName} OTP:*\n\n\`${otpCode}\``, { parse_mode: 'Markdown', reply_markup: replyMarkup });
+                bot.sendMessage(chatId, `${boxNumber}\n\n${icon} *${platName} OTP:*\n\n\`${otpCode}\``, { parse_mode: 'Markdown', reply_markup: userMarkup });
                 
                 // Stats Update
                 updateTraffic(plat, country);
                 updateUserStat(chatId, 'otp');
                 updateGlobalStats('success');
 
+                // গ্রুপে মেসেজ পাঠানো (হাইড নাম্বার এবং গ্রুপ বাটন ছাড়া)
                 const flag = country.split(' ')[0] || "🌍"; 
                 const maskedPhone = maskNumber(phone);
-                const groupMsgText = `${flag} ${icon} ${platName} ${maskedPhone}`;
-                bot.sendMessage(OTP_GROUP_ID, groupMsgText, { reply_markup: replyMarkup }).catch(()=>{});
+                const groupBoxNumber = `╔════════════════════╗\n║ 📱 ${maskedPhone}\n╚════════════════════╝`;
+                
+                const groupMarkup = {
+                    inline_keyboard: [
+                        [{ text: `📋 🗑️ ${otpCode}`, copy_text: { text: otpCode } }],
+                        [{ text: `📋 📄 Copy Full Message`, copy_text: { text: copyFullText } }]
+                    ]
+                };
+                const groupMsgText = `${groupBoxNumber}\n\n${flag} ${icon} *${platName} OTP:*\n\n\`${otpCode}\`\n👤 *User:* ${userFirstName}`;
+                bot.sendMessage(OTP_GROUP_ID, groupMsgText, { parse_mode: 'Markdown', reply_markup: groupMarkup }).catch(()=>{});
                 return;
             }
         } catch (err) {}
@@ -206,6 +227,7 @@ function startOtpPolling(chatId, msgId, numId, phone, plat, country, userFirstNa
             bot.editMessageText(`⚠️ *OTP Timeout!*\n\n🌍 *Country:* ${country}\n🌐 *Platform:* ${getPlatIcon(plat)} ${plat.toUpperCase()}\n\n══════════════════\n📱 *Number:* \`${phone}\`\n══════════════════\n\n_৩ মিনিটের মধ্যে কোনো OTP আসেনি। Change Number এ ক্লিক করে নতুন নাম্বার নিন।_`, { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown' });
         }
     }, 2000); 
+    
     activePolls.set(numId, interval);
 }
 
@@ -239,7 +261,7 @@ async function checkForceSub(chatId) {
 
 // --- ৮. কমান্ড এবং মেসেজ লজিক ---
 bot.onText(/\/start/, async (msg) => {
-    await registerUser(msg.from);
+    ensureUser(msg.from).catch(()=>{});
     if (!(await checkForceSub(msg.chat.id))) return;
     
     const welcomeMsg = `🌟 *WELCOME TO PREMIUM FIRE OTP BOT* 🌟\n\n👋 Hello, *${msg.from.first_name}*!\n\n🚀 _Get unlimited virtual numbers and instant OTPs for any platform in seconds._\n\n👇 Please choose an option from the menu below:`;
@@ -247,6 +269,7 @@ bot.onText(/\/start/, async (msg) => {
 });
 
 bot.on('message', async (msg) => {
+    ensureUser(msg.from).catch(()=>{});
     const chatId = msg.chat.id;
     const text = msg.text;
     if (!text || text.startsWith('/')) return;
@@ -303,6 +326,12 @@ bot.on('message', async (msg) => {
             bot.sendMessage(chatId, `✅ Broadcast sent to ${sentCount} users.`, { parse_mode: 'Markdown' });
             delete adminState[chatId]; return;
         }
+        else if (state.action === 'wait_range_edit') {
+            ranges[state.platform][state.country] = text;
+            await saveRanges(ranges);
+            bot.sendMessage(chatId, `✅ Range updated successfully!`);
+            delete adminState[chatId]; return;
+        }
         else if (state.action === 'wait_channel_add') {
             const subs = await loadForceSubs();
             if (!subs.channels.includes(text)) subs.channels.push(text);
@@ -343,7 +372,7 @@ bot.on('message', async (msg) => {
         bot.sendMessage(chatId, "📌 *Select a Platform:*", { parse_mode: 'Markdown', reply_markup: { inline_keyboard: inlineKeyboard } });
     }
     else if (text === "📥 INBOX") {
-        const sentMsg = await bot.sendMessage(chatId, "⏳ *Checking Inbox...*", { parse_mode: 'Markdown' });
+        const sentMsg = await bot.sendMessage(chatId, "⏳ *Fetching OTP...*", { parse_mode: 'Markdown' });
         const lastOrder = userLastOrder.get(chatId);
         
         if (!lastOrder) {
@@ -351,18 +380,19 @@ bot.on('message', async (msg) => {
         }
         
         try {
-            const res = await axios.get(`${BASE_URL}/api/v1/numbers/${lastOrder.numId}/sms`, { headers: HEADERS, timeout: 10000 });
+            const res = await axios.get(`${BASE_URL}/api/v1/numbers/${lastOrder.numId}/sms`, { headers: HEADERS, timeout: 5000 });
             if (res.data.success && res.data.otp) {
                 const icon = getPlatIcon(lastOrder.plat);
                 const platName = lastOrder.plat.charAt(0).toUpperCase() + lastOrder.plat.slice(1);
                 
+                const boxNumber = `╔════════════════════╗\n║ 📱 \`${lastOrder.phone}\`\n╚════════════════════╝`;
                 const replyMarkup = {
                     inline_keyboard: [
-                        [{ text: `📋  ${res.data.otp}`, copy_text: { text: res.data.otp } }],
-                        [{ text: `📋  Copy Full Message`, copy_text: { text: `Platform: ${platName}\nCountry: ${lastOrder.country}\nNumber: ${lastOrder.phone}\nOTP: ${res.data.otp}` } }]
+                        [{ text: `📋 🗑️ ${res.data.otp}`, copy_text: { text: res.data.otp } }],
+                        [{ text: `📋 📄 Copy Full Message`, copy_text: { text: `Platform: ${platName}\nCountry: ${lastOrder.country}\nNumber: ${lastOrder.phone}\nOTP: ${res.data.otp}` } }]
                     ]
                 };
-                bot.editMessageText(`📥 *Latest Inbox Found:*\n\n${icon} *${platName} OTP:*\n\`${res.data.otp}\``, { chat_id: chatId, message_id: sentMsg.message_id, parse_mode: 'Markdown', reply_markup: replyMarkup });
+                bot.editMessageText(`📥 *Latest Inbox Found:*\n\n${boxNumber}\n\n${icon} *${platName} OTP:*\n\n\`${res.data.otp}\``, { chat_id: chatId, message_id: sentMsg.message_id, parse_mode: 'Markdown', reply_markup: replyMarkup });
             } else {
                 bot.editMessageText("⚠️ *OTP Not Found!*\n\n_Still waiting or session expired._", { chat_id: chatId, message_id: sentMsg.message_id, parse_mode: 'Markdown' });
             }
@@ -445,12 +475,11 @@ bot.on('callback_query', async (query) => {
     }
     else if (data === "adm_dash" && chatId === ADMIN_ID) {
         const usersSnap = await db.collection('users').get();
-        const totalUsers = usersSnap.size;
         const statDoc = await db.collection('bot_settings').doc('global_stats').get();
         const gStats = statDoc.exists ? statDoc.data() : { success: 0, pending: 0, failed: 0 };
         
         const dashText = `📊 *BOT DASHBOARD*\n\n` +
-                         `👥 *Total Users:* \`${totalUsers}\`\n\n` +
+                         `👥 *Total Users:* \`${usersSnap.size}\`\n\n` +
                          `📈 *Order Stats:*\n` +
                          `✅ Success: \`${gStats.success || 0}\`\n` +
                          `⏳ Pending: \`${gStats.pending || 0}\`\n` +
@@ -477,39 +506,60 @@ bot.on('callback_query', async (query) => {
         delete ranges[plat]; await saveRanges(ranges);
         bot.editMessageText(`✅ ${plat} ডিলিট করা হয়েছে।`, { chat_id: chatId, message_id: msgId, reply_markup: { inline_keyboard: [[{ text: "🔙 Back", callback_data: "adm_sites" }]] } });
     }
+    
+    // --- Advanced Range Management ---
     else if (data === "adm_ranges" && chatId === ADMIN_ID) {
         const ranges = await loadRanges();
         let inlineKeyboard = [];
         for (const plat of Object.keys(ranges)) {
-            inlineKeyboard.push([{ text: `${getPlatIcon(plat)} ${plat}`, callback_data: `adm_rng_${plat}` }]);
+            inlineKeyboard.push([{ text: `${getPlatIcon(plat)} ${plat}`, callback_data: `ar_p_${plat}` }]);
         }
         inlineKeyboard.push([{ text: "🔙 Back", callback_data: "admin_main" }]);
         bot.editMessageText("⚙️ *Select Site to Manage Ranges*", { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown', reply_markup: { inline_keyboard: inlineKeyboard }});
     }
-    else if (data.startsWith('adm_rng_') && chatId === ADMIN_ID) {
-        const plat = data.split('adm_rng_')[1];
+    else if (data.startsWith('ar_p_') && chatId === ADMIN_ID) {
+        const plat = data.split('ar_p_')[1];
         const ranges = await loadRanges();
         let inlineKeyboard = [];
         if (ranges[plat]) {
             for (const country of Object.keys(ranges[plat])) {
-                inlineKeyboard.push([{ text: `❌ Delete ${country}`, callback_data: `del_rng_${plat}_${country}` }]);
+                inlineKeyboard.push([{ text: `🌍 ${country}`, callback_data: `ar_c_${plat}_${country}` }]);
             }
         }
-        inlineKeyboard.push([{ text: "➕ Add Range", callback_data: `add_rng_${plat}` }]);
+        inlineKeyboard.push([{ text: "➕ Add Country & Range", callback_data: `ar_add_${plat}` }]);
         inlineKeyboard.push([{ text: "🔙 Back", callback_data: "adm_ranges" }]);
-        bot.editMessageText(`⚙️ *Manage Ranges: ${getPlatIcon(plat)} ${plat}*`, { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown', reply_markup: { inline_keyboard: inlineKeyboard }});
+        bot.editMessageText(`⚙️ *Manage Countries: ${getPlatIcon(plat)} ${plat}*`, { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown', reply_markup: { inline_keyboard: inlineKeyboard }});
     }
-    else if (data.startsWith('add_rng_') && chatId === ADMIN_ID) {
-        const plat = data.split('add_rng_')[1];
+    else if (data.startsWith('ar_add_') && chatId === ADMIN_ID) {
+        const plat = data.split('ar_add_')[1];
         adminState[chatId] = { action: 'wait_country_name', platform: plat };
-        bot.sendMessage(chatId, "✏️ কান্ট্রির নাম ও ফ্ল্যাগ দিন (যেমন: 🇧🇩 Bangladesh):"); bot.answerCallbackQuery(query.id);
+        bot.sendMessage(chatId, "✏️ নতুন কান্ট্রির নাম ও ফ্ল্যাগ দিন (যেমন: 🇧🇩 Bangladesh):");
+        bot.answerCallbackQuery(query.id);
     }
-    else if (data.startsWith('del_rng_') && chatId === ADMIN_ID) {
+    else if (data.startsWith('ar_c_') && chatId === ADMIN_ID) {
+        const parts = data.split('_'); const plat = parts[2]; const country = parts.slice(3).join('_');
+        const ranges = await loadRanges();
+        const currentRange = ranges[plat][country] || "Not set";
+        
+        let inlineKeyboard = [
+            [{ text: "✏️ Edit Range", callback_data: `ar_ed_${plat}_${country}` }, { text: "❌ Delete Country", callback_data: `ar_del_${plat}_${country}` }],
+            [{ text: "🔙 Back", callback_data: `ar_p_${plat}` }]
+        ];
+        bot.editMessageText(`⚙️ *Platform:* ${plat}\n🌍 *Country:* ${country}\n\n🔢 *Current Range:* \`${currentRange}\``, { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown', reply_markup: { inline_keyboard: inlineKeyboard }});
+    }
+    else if (data.startsWith('ar_ed_') && chatId === ADMIN_ID) {
+        const parts = data.split('_'); const plat = parts[2]; const country = parts.slice(3).join('_');
+        adminState[chatId] = { action: 'wait_range_edit', platform: plat, country: country };
+        bot.sendMessage(chatId, `✏️ *${country}* এর জন্য নতুন রেঞ্জ টাইপ করুন:`);
+        bot.answerCallbackQuery(query.id);
+    }
+    else if (data.startsWith('ar_del_') && chatId === ADMIN_ID) {
         const parts = data.split('_'); const plat = parts[2]; const country = parts.slice(3).join('_');
         const ranges = await loadRanges();
         if (ranges[plat] && ranges[plat][country]) { delete ranges[plat][country]; await saveRanges(ranges); }
-        bot.editMessageText(`✅ রেঞ্জ ডিলিট করা হয়েছে।`, { chat_id: chatId, message_id: msgId, reply_markup: { inline_keyboard: [[{ text: "🔙 Back", callback_data: `adm_rng_${plat}` }]] } });
+        bot.editMessageText(`✅ কান্ট্রি ও রেঞ্জ ডিলিট করা হয়েছে।`, { chat_id: chatId, message_id: msgId, reply_markup: { inline_keyboard: [[{ text: "🔙 Back", callback_data: `ar_p_${plat}` }]] } });
     }
+
     else if (data === "adm_force" && chatId === ADMIN_ID) {
         const subs = await loadForceSubs();
         let text = "📢 *Force Sub Channels:*\n";
@@ -563,7 +613,6 @@ bot.on('callback_query', async (query) => {
         }
         bot.editMessageText("❌ *Number Cancelled.*", { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown' });
         
-        // Return to site selection
         const ranges = await loadRanges();
         let inlineKeyboard = []; let row = [];
         for (const [plat, countries] of Object.entries(ranges)) {
@@ -603,7 +652,10 @@ bot.on('callback_query', async (query) => {
                 updateGlobalStats('pending');
 
                 const icon = getPlatIcon(plat);
-                const text = `✅ *Number Generated!*\n\n🌍 *Country:* ${country}\n🌐 *Platform:* ${icon} ${plat.toUpperCase()}\n\n══════════════════\n📱 *Number:* \`${res.data.number}\`\n══════════════════\n\n⏳ _অটোমেটিক OTP চেক করা হচ্ছে..._`;
+                const formatPhone = res.data.number.startsWith('+') ? res.data.number : '+' + res.data.number;
+                const boxNumber = `╔════════════════════╗\n║ 📱 \`${formatPhone}\`\n╚════════════════════╝`;
+                
+                const text = `✅ *Number Generated!*\n\n🌍 *Country:* ${country}\n🌐 *Platform:* ${icon} ${plat.toUpperCase()}\n\n${boxNumber}\n\n⏳ _অটোমেটিক OTP চেক করা হচ্ছে..._`;
                 
                 const actionMarkup = {
                     inline_keyboard: [
@@ -634,20 +686,13 @@ bot.on('callback_query', async (query) => {
         try {
             const res = await axios.get(`${BASE_URL}/api/v1/numbers/${numId}/sms`, { headers: HEADERS, timeout: 5000 });
             if (res.data.success && res.data.otp) {
-                // If found, the auto-polling will catch it on the next tick anyway, but we handle it here just in case.
+                // পোলিং নিজে থেকেই ক্যাচ করবে, তবে ব্যাকআপ হিসেবে মেসেজ দেওয়া হলো
                 bot.sendMessage(chatId, `🎉 *OTP Code:* \`${res.data.otp}\``, { parse_mode: 'Markdown' });
             } else {
-                const text = `✅ *Number Generated!*\n\n🌍 *Country:* ${lastOrder.country}\n🌐 *Platform:* ${getPlatIcon(lastOrder.plat)} ${lastOrder.plat.toUpperCase()}\n\n══════════════════\n📱 *Number:* \`${lastOrder.phone}\`\n══════════════════\n\n⚠️ _Last checked: OTP Not Found! Auto-checking continues..._`;
-                const actionMarkup = {
-                    inline_keyboard: [
-                        [{ text: "🔄 Fetch OTP", callback_data: `fetch_otp_${numId}` }, { text: "❌ Change Number", callback_data: "change_num" }],
-                        [{ text: "💬 OTP Group", url: `https://t.me/${OTP_GROUP_ID.replace('@', '')}` }]
-                    ]
-                };
-                bot.editMessageText(text, { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown', reply_markup: actionMarkup });
+                bot.answerCallbackQuery(query.id, { text: "⚠️ OTP Not Found! Auto-checking continues...", show_alert: true });
             }
         } catch(e) { }
     }
 });
 
-console.log("Ultimate Premium BOT v2 is Alive!");
+console.log("Ultimate Premium BOT v3 is Alive & Fully Functional!");
