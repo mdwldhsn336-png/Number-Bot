@@ -12,7 +12,7 @@ process.on('uncaughtException', (err) => { console.error('Uncaught Exception:', 
 // --- ১. Render Express Server ---
 const app = express();
 const PORT = process.env.PORT || 3000;
-app.get('/', (req, res) => res.send('Premium Fire OTP Bot v9.0 is Running Perfectly!'));
+app.get('/', (req, res) => res.send('Premium Fire OTP Bot v9.1 is Running Perfectly!'));
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 
 // --- ২. Firebase Database Setup ---
@@ -37,8 +37,11 @@ const BOT_TOKEN = process.env.BOT_TOKEN;
 const API_KEY = process.env.API_KEY;
 const ADMIN_ID = parseInt(process.env.ADMIN_ID);
 const OTP_GROUP_ID = "@otp_number_grp"; 
-const BASE_URL = 'http://63.141.255.227'; // ✅ API আইপি আপডেট করা হলো
+const BASE_URL = 'http://63.141.255.227';
 const HEADERS = { 'X-API-Key': API_KEY };
+
+// ✅ ৩০ মিনিটের সময়সীমা (মিলিসেকেন্ডে)
+const NUMBER_EXPIRY_MS = 30 * 60 * 1000;
 
 const bot = new TelegramBot(BOT_TOKEN, { polling: true });
 bot.on('polling_error', (err) => console.log("Polling Error:", err.message));
@@ -175,12 +178,32 @@ function getAdminMenu() {
     };
 }
 
-// --- ৬. অটো-পোলিং ও ক্লিন OTP মেসেজ ---
-function startOtpPolling(chatId, msgId, numId, phone, plat, country, attempt = 0) {
-    if (!activePolls.has(numId) || deliveredOtps.has(numId)) return; 
+// --- ৬. অটো-পোলিং (৩০ মিনিট পর্যন্ত চলবে) ---
+function startOtpPolling(chatId, msgId, numId, phone, plat, country, createdAt, attempt = 0) {
+    if (!activePolls.has(numId) || deliveredOtps.has(numId)) return;
+
+    // ✅ মেয়াদ শেষ হয়ে গেলে
+    if (Date.now() - createdAt > NUMBER_EXPIRY_MS) {
+        activePolls.delete(numId);
+        updateGlobalStats('failed');
+        const formatPhone = phone.startsWith('+') ? phone : '+' + phone;
+        const boxNumber = `╔════════════════════╗\n║ 📱 \`${formatPhone}\`\n╚════════════════════╝`;
+        bot.editMessageText(`⚠️ *Number Expired!*\n\n🌍 *Country:* ${country}\n\n${boxNumber}\n\n_৩০ মিনিট পার হয়ে গেছে। Change Number এ ক্লিক করে নতুন নাম্বার নিন।_`, { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown' }).catch(()=>{});
+        return;
+    }
 
     setTimeout(async () => {
         if (!activePolls.has(numId) || deliveredOtps.has(numId)) return;
+
+        // আবার চেক (অ্যাসিঙ্ক অংশে)
+        if (Date.now() - createdAt > NUMBER_EXPIRY_MS) {
+            activePolls.delete(numId);
+            updateGlobalStats('failed');
+            const formatPhone = phone.startsWith('+') ? phone : '+' + phone;
+            const boxNumber = `╔════════════════════╗\n║ 📱 \`${formatPhone}\`\n╚════════════════════╝`;
+            bot.editMessageText(`⚠️ *Number Expired!*\n\n🌍 *Country:* ${country}\n\n${boxNumber}\n\n_৩০ মিনিট পার হয়ে গেছে। Change Number এ ক্লিক করে নতুন নাম্বার নিন।_`, { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown' }).catch(()=>{});
+            return;
+        }
 
         try {
             const res = await axios.get(`${BASE_URL}/api/v1/numbers/${numId}/sms`, { headers: HEADERS });
@@ -218,16 +241,17 @@ function startOtpPolling(chatId, msgId, numId, phone, plat, country, attempt = 0
             }
         } catch (err) {}
 
-        if (attempt >= 90) { 
+        // ৩০ মিনিটে প্রায় ৯০০ বার চেক হবে (২ সেকেন্ড ইন্টারভাল)
+        if (attempt >= 900) { 
             activePolls.delete(numId);
             updateGlobalStats('failed');
             const formatPhone = phone.startsWith('+') ? phone : '+' + phone;
-            bot.editMessageText(`⚠️ *OTP Timeout!*\n\n🌍 *Country:* ${country}\n\n╔════════════════════╗\n║ 📱 \`${formatPhone}\`\n╚════════════════════╝\n\n_৩ মিনিটের মধ্যে কোনো OTP আসেনি। Change Number এ ক্লিক করে নতুন নাম্বার নিন।_`, { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown' }).catch(()=>{});
+            bot.editMessageText(`⚠️ *OTP Timeout!*\n\n🌍 *Country:* ${country}\n\n╔════════════════════╗\n║ 📱 \`${formatPhone}\`\n╚════════════════════╝\n\n_৩০ মিনিটের মধ্যে কোনো OTP আসেনি। Change Number এ ক্লিক করে নতুন নাম্বার নিন।_`, { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown' }).catch(()=>{});
             return;
         }
 
         if (activePolls.has(numId)) {
-            startOtpPolling(chatId, msgId, numId, phone, plat, country, attempt + 1);
+            startOtpPolling(chatId, msgId, numId, phone, plat, country, createdAt, attempt + 1);
         }
     }, 2000); 
 }
@@ -594,7 +618,8 @@ bot.on('callback_query', async (query) => {
                 const res = await axios.post(`${BASE_URL}/api/v1/numbers/get`, { range: rangeVal, format: "international" }, { headers: HEADERS, timeout: 15000 });
                 
                 if (res.data.success) {
-                    userLastOrder.set(chatId, { numId: res.data.number_id, phone: res.data.number, plat: plat, country: country });
+                    const createdAt = Date.now(); // ✅ টাইমস্ট্যাম্প সংরক্ষণ
+                    userLastOrder.set(chatId, { numId: res.data.number_id, phone: res.data.number, plat: plat, country: country, createdAt });
                     updateUserStat(chatId, 'number');
                     updateGlobalStats('pending');
 
@@ -611,7 +636,7 @@ bot.on('callback_query', async (query) => {
                     bot.editMessageText(text, { chat_id: chatId, message_id: sentMsg.message_id, parse_mode: 'Markdown', reply_markup: actionMarkup });
                     
                     activePolls.set(res.data.number_id, true);
-                    startOtpPolling(chatId, sentMsg.message_id, res.data.number_id, res.data.number, plat, country);
+                    startOtpPolling(chatId, sentMsg.message_id, res.data.number_id, res.data.number, plat, country, createdAt);
                 } else {
                     bot.editMessageText("❌ *এই মুহূর্তে এই কান্ট্রির কোনো নাম্বার স্টকে নেই।*", { chat_id: chatId, message_id: sentMsg.message_id, parse_mode: 'Markdown' });
                 }
@@ -619,12 +644,22 @@ bot.on('callback_query', async (query) => {
             bot.answerCallbackQuery(query.id);
         }
         
-        // 🔄 FETCH OTP BUTTON (ম্যানুয়াল চেক)
+        // 🔄 FETCH OTP BUTTON (ম্যানুয়াল চেক + মেয়াদ যাচাই)
         else if (data.startsWith('fetch_otp_')) {
             const numId = data.split('fetch_otp_')[1];
             const lastOrder = userLastOrder.get(chatId);
             if (!lastOrder || lastOrder.numId !== numId) {
                 bot.answerCallbackQuery(query.id, { text: "এই নাম্বারটি আর valid নয়।", show_alert: true });
+                return;
+            }
+
+            // ✅ মেয়াদোত্তীর্ণ কিনা চেক
+            if (Date.now() - lastOrder.createdAt > NUMBER_EXPIRY_MS) {
+                bot.answerCallbackQuery(query.id, { text: "❌ Number expired! Please take a new one.", show_alert: true });
+                activePolls.delete(numId);
+                const formatPhone = lastOrder.phone.startsWith('+') ? lastOrder.phone : '+' + lastOrder.phone;
+                const boxNumber = `╔════════════════════╗\n║ 📱 \`${formatPhone}\`\n╚════════════════════╝`;
+                bot.editMessageText(`⚠️ *Number Expired!*\n\n🌍 *Country:* ${lastOrder.country}\n\n${boxNumber}`, { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown' }).catch(()=>{});
                 return;
             }
 
@@ -636,7 +671,6 @@ bot.on('callback_query', async (query) => {
             try {
                 const res = await axios.get(`${BASE_URL}/api/v1/numbers/${numId}/sms`, { headers: HEADERS, timeout: 5000 });
                 if (res.data.success && res.data.otp) {
-                    // OTP এসে গেছে
                     const otpCode = res.data.otp;
                     deliveredOtps.add(numId);
                     activePolls.delete(numId);
@@ -652,7 +686,6 @@ bot.on('callback_query', async (query) => {
                     };
                     bot.editMessageText(`✅ *OTP Received!*\n\n🌍 *Country:* ${lastOrder.country}\n\n${boxNumber}`, { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown', reply_markup: otpMarkup });
                 } else {
-                    // OTP এখনো আসেনি
                     const formatPhone = lastOrder.phone.startsWith('+') ? lastOrder.phone : '+' + lastOrder.phone;
                     const boxNumber = `╔════════════════════╗\n║ 📱 \`${formatPhone}\`\n╚════════════════════╝`;
                     const actionMarkup = {
@@ -670,4 +703,4 @@ bot.on('callback_query', async (query) => {
     } catch(e) { bot.answerCallbackQuery(query.id, { text: "⚠️ Temporary Error!", show_alert: true }); }
 });
 
-console.log("🚀 Premium Bulletproof Bot v9.0 is Alive!");
+console.log("🚀 Premium Bulletproof Bot v9.1 is Alive! (30min expiry)");
