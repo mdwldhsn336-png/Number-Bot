@@ -1,4 +1,4 @@
-Require('dotenv').config();
+require('dotenv').config();
 const TelegramBot = require('node-telegram-bot-api');
 const axios = require('axios');
 const admin = require('firebase-admin');
@@ -175,7 +175,7 @@ function getAdminMenu() {
     };
 }
 
-// --- ৬. অটো-পোলিং ও ক্লিন OTP মেসেজ (মার্ক করা টেক্সট রিমুভড) ---
+// --- ৬. অটো-পোলিং ও ক্লিন OTP মেসেজ ---
 function startOtpPolling(chatId, msgId, numId, phone, plat, country, attempt = 0) {
     if (!activePolls.has(numId) || deliveredOtps.has(numId)) return; 
 
@@ -198,7 +198,7 @@ function startOtpPolling(chatId, msgId, numId, phone, plat, country, attempt = 0
 
                 const userMarkup = {
                     inline_keyboard: [
-                        [{ text: `📋 🗑️ ${otpCode}`, copy_text: { text: otpCode } }],
+                        [{ text: `📋  ${otpCode}`, copy_text: { text: otpCode } }],
                         [{ text: "💬 OTP Group", url: `https://t.me/${OTP_GROUP_ID.replace('@', '')}` }]
                     ]
                 };
@@ -362,7 +362,7 @@ bot.on('message', async (msg) => {
                     
                     const replyMarkup = {
                         inline_keyboard: [
-                            [{ text: `📋 🗑️ ${res.data.otp}`, copy_text: { text: res.data.otp } }]
+                            [{ text: `📋  ${res.data.otp}`, copy_text: { text: res.data.otp } }]
                         ]
                     };
                     bot.editMessageText(`📥 *Latest Inbox Found:*\n\n🌍 *Country:* ${lastOrder.country}\n\n${boxNumber}`, { chat_id: chatId, message_id: sentMsg.message_id, parse_mode: 'Markdown', reply_markup: replyMarkup });
