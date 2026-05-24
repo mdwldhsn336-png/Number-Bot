@@ -37,7 +37,8 @@ const BOT_TOKEN = process.env.BOT_TOKEN;
 const API_KEY = process.env.API_KEY;
 const ADMIN_ID = parseInt(process.env.ADMIN_ID);
 const OTP_GROUP_ID = "@otp_number_grp"; 
-const BASE_URL = 'http://185.190.142.81';
+// BASE_URL আপডেট করা হয়েছে নতুন IP অনুযায়ী
+const BASE_URL = 'http://63.141.255.227';
 const HEADERS = { 'X-API-Key': API_KEY };
 
 const bot = new TelegramBot(BOT_TOKEN, { polling: true });
