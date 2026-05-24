@@ -12,7 +12,7 @@ process.on('uncaughtException', (err) => { console.error('Uncaught Exception:', 
 // --- ১. Render Express Server ---
 const app = express();
 const PORT = process.env.PORT || 3000;
-app.get('/', (req, res) => res.send('Premium Fire OTP Bot v9.1 is Running Perfectly!'));
+app.get('/', (req, res) => res.send('Premium Fire OTP Bot v9.2 is Running Perfectly!'));
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 
 // --- ২. Firebase Database Setup ---
@@ -173,7 +173,9 @@ function getAdminMenu() {
     return {
         inline_keyboard: [
             [{ text: "🌐 Manage Sites", callback_data: "adm_sites" }, { text: "⚙️ Manage Ranges", callback_data: "adm_ranges" }],
-            [{ text: "💰 API Balance", callback_data: "adm_balance" }, { text: "📊 Dashboard", callback_data: "adm_dash" }]
+            [{ text: "💰 API Balance", callback_data: "adm_balance" }, { text: "📊 Dashboard", callback_data: "adm_dash" }],
+            [{ text: "📢 Broadcast Notice", callback_data: "adm_broadcast" }],
+            [{ text: "👥 User List", callback_data: "adm_userlist" }]
         ]
     };
 }
@@ -182,7 +184,6 @@ function getAdminMenu() {
 function startOtpPolling(chatId, msgId, numId, phone, plat, country, createdAt, attempt = 0) {
     if (!activePolls.has(numId) || deliveredOtps.has(numId)) return;
 
-    // ✅ মেয়াদ শেষ হয়ে গেলে
     if (Date.now() - createdAt > NUMBER_EXPIRY_MS) {
         activePolls.delete(numId);
         updateGlobalStats('failed');
@@ -195,7 +196,6 @@ function startOtpPolling(chatId, msgId, numId, phone, plat, country, createdAt, 
     setTimeout(async () => {
         if (!activePolls.has(numId) || deliveredOtps.has(numId)) return;
 
-        // আবার চেক (অ্যাসিঙ্ক অংশে)
         if (Date.now() - createdAt > NUMBER_EXPIRY_MS) {
             activePolls.delete(numId);
             updateGlobalStats('failed');
@@ -221,7 +221,7 @@ function startOtpPolling(chatId, msgId, numId, phone, plat, country, createdAt, 
 
                 const userMarkup = {
                     inline_keyboard: [
-                        [{ text: `📋 🗑️ ${otpCode}`, copy_text: { text: otpCode } }],
+                        [{ text: `📋 ${otpCode}`, copy_text: { text: otpCode } }],
                         [{ text: "💬 OTP Group", url: `https://t.me/${OTP_GROUP_ID.replace('@', '')}` }]
                     ]
                 };
@@ -241,7 +241,6 @@ function startOtpPolling(chatId, msgId, numId, phone, plat, country, createdAt, 
             }
         } catch (err) {}
 
-        // ৩০ মিনিটে প্রায় ৯০০ বার চেক হবে (২ সেকেন্ড ইন্টারভাল)
         if (attempt >= 900) { 
             activePolls.delete(numId);
             updateGlobalStats('failed');
@@ -259,7 +258,7 @@ function startOtpPolling(chatId, msgId, numId, phone, plat, country, createdAt, 
 // --- ৭. ফোর্স সাবস্ক্রাইব (হার্ডকোডেড চ্যানেল) ---
 async function checkForceSub(chatId) {
     if (chatId === ADMIN_ID) return true;
-    const channels = ['@developer_walid', '@fireotp_method'];
+    const channels = ['@developer_walid', '@fireotp_method']; // ✅ দুইটি চ্যানেল
     let isSubscribed = true;
     let buttons = [];
 
@@ -288,7 +287,7 @@ async function checkForceSub(chatId) {
 bot.onText(/\/start/, async (msg) => {
     ensureUser(msg.from); 
     if (!(await checkForceSub(msg.chat.id))) return;
-    const welcomeMsg = `🌟 *WELCOME TO PREMIUM FIRE OTP BOT* 🌟\n\n👋 Hello, *${msg.from.first_name}*!\n\n🚀 _Get unlimited virtual numbers and instant OTPs for any platform in seconds._\n\n👇 Please choose an option from the menu below:`;
+    const welcomeMsg = `💥 *WELCOME TO FIRE OTP BOT* 💥\n\n👋 Hello, *${msg.from.first_name}*!\n\n🚀 _Get unlimited virtual numbers and instant OTPs for any platform in seconds._\n\n👇 Please choose an option from the menu below:`;
     bot.sendMessage(msg.chat.id, welcomeMsg, { parse_mode: 'Markdown', ...getMainMenu(msg.chat.id) });
 });
 
@@ -351,6 +350,31 @@ bot.on('message', async (msg) => {
             await saveRanges(ranges);
             bot.sendMessage(chatId, `✅ Range updated successfully!`);
             delete adminState[chatId]; return;
+        }
+        // ✅ Broadcast Notice input
+        else if (state.action === 'wait_broadcast_notice') {
+            const noticeText = text.trim();
+            if (!noticeText) {
+                bot.sendMessage(chatId, "❌ *Notice text cannot be empty.*", { parse_mode: 'Markdown' });
+                delete adminState[chatId];
+                return;
+            }
+            try {
+                await db.collection('bot_settings').doc('notice').set({
+                    text: noticeText,
+                    updatedAt: new Date().toISOString()
+                });
+                bot.sendMessage(chatId, "✅ *Notice saved! Broadcasting...*", { parse_mode: 'Markdown' });
+                // Broadcast to all users
+                const usersSnap = await db.collection('users').get();
+                usersSnap.forEach(doc => {
+                    bot.sendMessage(doc.id, `📢 *Notice from Admin:*\n\n${noticeText}`, { parse_mode: 'Markdown' }).catch(()=>{});
+                });
+            } catch (e) {
+                bot.sendMessage(chatId, "⚠️ *Failed to save notice.*", { parse_mode: 'Markdown' });
+            }
+            delete adminState[chatId];
+            return;
         }
     }
 
@@ -453,7 +477,7 @@ bot.on('callback_query', async (query) => {
             bot.editMessageText("🛠 *Admin Control Panel*\n\nSelect an option below:", { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown', reply_markup: getAdminMenu() });
         }
         else if (data === "adm_balance" && chatId === ADMIN_ID) {
-            bot.answerCallbackQuery(query.id, { text: "Checking Balance..." });
+            bot.answerCallbackQuery(query.id, { text: "💰 Checking Balance..." });
             try {
                 const res = await axios.get(`${BASE_URL}/api/v1/balance`, { headers: HEADERS });
                 if(res.data.success) {
@@ -548,6 +572,48 @@ bot.on('callback_query', async (query) => {
             bot.editMessageText(`✅ কান্ট্রি ও রেঞ্জ ডিলিট করা হয়েছে।`, { chat_id: chatId, message_id: msgId, reply_markup: { inline_keyboard: [[{ text: "🔙 Back", callback_data: `ar_p_${plat}` }]] } });
         }
 
+        // ✅ Broadcast Notice Callback
+        else if (data === "adm_broadcast" && chatId === ADMIN_ID) {
+            const doc = await db.collection('bot_settings').doc('notice').get();
+            let noticeText = "None";
+            if (doc.exists) noticeText = doc.data().text;
+            let markup = {
+                inline_keyboard: [
+                    [{ text: "✏️ Add/Edit Notice", callback_data: "broadcast_edit" }, { text: "🗑️ Delete Notice", callback_data: "broadcast_delete" }],
+                    [{ text: "🔙 Back", callback_data: "admin_main" }]
+                ]
+            };
+            bot.editMessageText(`📢 *Current Notice:* ${noticeText}`, { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown', reply_markup: markup });
+        }
+        else if (data === "broadcast_edit" && chatId === ADMIN_ID) {
+            adminState[chatId] = { action: 'wait_broadcast_notice' };
+            bot.sendMessage(chatId, "✏️ *নতুন নোটিশ টেক্সট লিখুন:*", { parse_mode: 'Markdown' });
+            bot.answerCallbackQuery(query.id);
+        }
+        else if (data === "broadcast_delete" && chatId === ADMIN_ID) {
+            await db.collection('bot_settings').doc('notice').delete().catch(()=>{});
+            bot.editMessageText("✅ *Notice deleted.*", { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: "🔙 Back", callback_data: "admin_main" }]] } });
+        }
+        // ✅ User List Callback
+        else if (data === "adm_userlist" && chatId === ADMIN_ID) {
+            bot.answerCallbackQuery(query.id, { text: "⏳ Preparing user list..." });
+            try {
+                const usersSnap = await db.collection('users').get();
+                let userList = "👥 *USER LIST* 👥\n\n";
+                userList += "ID | Name | Username | Numbers | OTPs | Joined\n";
+                userList += "--------------------------------------------------\n";
+                usersSnap.forEach(doc => {
+                    const u = doc.data();
+                    userList += `${doc.id} | ${u.first_name || 'N/A'} | ${u.username || 'N/A'} | ${u.total_numbers || 0} | ${u.total_otps || 0} | ${u.joined ? new Date(u.joined).toLocaleDateString() : 'N/A'}\n`;
+                });
+                // Send as text file
+                const buffer = Buffer.from(userList, 'utf-8');
+                await bot.sendDocument(chatId, buffer, {}, { filename: 'users.txt', contentType: 'text/plain' });
+            } catch (e) {
+                bot.sendMessage(chatId, "⚠️ *Error generating user list.*", { parse_mode: 'Markdown' });
+            }
+        }
+
         // --- 2FA Config ---
         else if (data === "add_2fa") {
             adminState[chatId] = { action: 'wait_2fa_secret' };
@@ -559,7 +625,7 @@ bot.on('callback_query', async (query) => {
             const saved2fa = await get2FA(chatId);
             if (saved2fa[index]) {
                 const token = authenticator.generate(saved2fa[index].secret);
-                const markup = { inline_keyboard: [[{ text: `📋 🗑️ Copy Code: ${token}`, copy_text: { text: token } }]] };
+                const markup = { inline_keyboard: [[{ text: `📋 Copy Code: ${token}`, copy_text: { text: token } }]] };
                 bot.sendMessage(chatId, `🔐 *Live 2FA OTP Code:*\n\n\`${token}\``, { parse_mode: 'Markdown', reply_markup: markup });
             }
             bot.answerCallbackQuery(query.id);
@@ -618,7 +684,7 @@ bot.on('callback_query', async (query) => {
                 const res = await axios.post(`${BASE_URL}/api/v1/numbers/get`, { range: rangeVal, format: "international" }, { headers: HEADERS, timeout: 15000 });
                 
                 if (res.data.success) {
-                    const createdAt = Date.now(); // ✅ টাইমস্ট্যাম্প সংরক্ষণ
+                    const createdAt = Date.now();
                     userLastOrder.set(chatId, { numId: res.data.number_id, phone: res.data.number, plat: plat, country: country, createdAt });
                     updateUserStat(chatId, 'number');
                     updateGlobalStats('pending');
@@ -653,7 +719,6 @@ bot.on('callback_query', async (query) => {
                 return;
             }
 
-            // ✅ মেয়াদোত্তীর্ণ কিনা চেক
             if (Date.now() - lastOrder.createdAt > NUMBER_EXPIRY_MS) {
                 bot.answerCallbackQuery(query.id, { text: "❌ Number expired! Please take a new one.", show_alert: true });
                 activePolls.delete(numId);
@@ -682,7 +747,7 @@ bot.on('callback_query', async (query) => {
                     const boxNumber = `╔════════════════════╗\n║ 📱 \`${formatPhone}\`\n╚════════════════════╝`;
 
                     const otpMarkup = {
-                        inline_keyboard: [[{ text: `📋 🗑️ ${otpCode}`, copy_text: { text: otpCode } }]]
+                        inline_keyboard: [[{ text: `📋 ${otpCode}`, copy_text: { text: otpCode } }]]
                     };
                     bot.editMessageText(`✅ *OTP Received!*\n\n🌍 *Country:* ${lastOrder.country}\n\n${boxNumber}`, { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown', reply_markup: otpMarkup });
                 } else {
@@ -703,4 +768,4 @@ bot.on('callback_query', async (query) => {
     } catch(e) { bot.answerCallbackQuery(query.id, { text: "⚠️ Temporary Error!", show_alert: true }); }
 });
 
-console.log("🚀 Premium Bulletproof Bot v9.1 is Alive! (30min expiry)");
+console.log("🚀 Premium Bulletproof Bot v9.2 is Alive! (Broadcast+UserList)");
