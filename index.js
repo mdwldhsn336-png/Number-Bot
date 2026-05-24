@@ -37,7 +37,7 @@ const BOT_TOKEN = process.env.BOT_TOKEN;
 const API_KEY = process.env.API_KEY;
 const ADMIN_ID = parseInt(process.env.ADMIN_ID);
 const OTP_GROUP_ID = "@otp_number_grp"; 
-const BASE_URL = 'http://63.141.255.227';
+const BASE_URL = 'http://63.141.255.227'; // ✅ API আইপি আপডেট করা হলো
 const HEADERS = { 'X-API-Key': API_KEY };
 
 const bot = new TelegramBot(BOT_TOKEN, { polling: true });
@@ -198,7 +198,7 @@ function startOtpPolling(chatId, msgId, numId, phone, plat, country, attempt = 0
 
                 const userMarkup = {
                     inline_keyboard: [
-                        [{ text: `📋  ${otpCode}`, copy_text: { text: otpCode } }],
+                        [{ text: `📋 🗑️ ${otpCode}`, copy_text: { text: otpCode } }],
                         [{ text: "💬 OTP Group", url: `https://t.me/${OTP_GROUP_ID.replace('@', '')}` }]
                     ]
                 };
@@ -362,7 +362,7 @@ bot.on('message', async (msg) => {
                     
                     const replyMarkup = {
                         inline_keyboard: [
-                            [{ text: `📋  ${res.data.otp}`, copy_text: { text: res.data.otp } }]
+                            [{ text: `📋 🗑️ ${res.data.otp}`, copy_text: { text: res.data.otp } }]
                         ]
                     };
                     bot.editMessageText(`📥 *Latest Inbox Found:*\n\n🌍 *Country:* ${lastOrder.country}\n\n${boxNumber}`, { chat_id: chatId, message_id: sentMsg.message_id, parse_mode: 'Markdown', reply_markup: replyMarkup });
