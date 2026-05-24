@@ -8,23 +8,30 @@ const { authenticator } = require('otplib');
 // --- ১. Render Express Server ---
 const app = express();
 const PORT = process.env.PORT || 3000;
-app.get('/', (req, res) => res.send('Premium Fire OTP Bot v6.0 is Running!'));
+app.get('/', (req, res) => res.send('Premium Fire OTP Bot v7.0 is Running!'));
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 
-// --- ২. Firebase Database Setup (Error Proof) ---
-let privateKey = process.env.FIREBASE_PRIVATE_KEY;
-if(privateKey) {
-    // গিটহাব/রেন্ডারে প্রাইভেট কী এর কোটেশন বা স্পেস ফিক্স করার জন্য
-    privateKey = privateKey.replace(/\\n/g, '\n').replace(/^"(.*)"$/, '$1');
+// --- ২. Firebase Database Setup (Robust & Error Proof) ---
+try {
+    let privateKey = process.env.FIREBASE_PRIVATE_KEY;
+    if (privateKey) {
+        privateKey = privateKey.replace(/\\n/g, '\n').replace(/^"(.*)"$/, '$1');
+    } else {
+        console.error("⚠️ FIREBASE_PRIVATE_KEY is missing in Environment Variables!");
+    }
+
+    admin.initializeApp({
+      credential: admin.credential.cert({
+        projectId: process.env.FIREBASE_PROJECT_ID,
+        clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+        privateKey: privateKey,
+      })
+    });
+    console.log("✅ Firebase Database Connected Successfully!");
+} catch (error) {
+    console.error("❌ Firebase Initialization Error: ", error.message);
 }
 
-admin.initializeApp({
-  credential: admin.credential.cert({
-    projectId: process.env.FIREBASE_PROJECT_ID,
-    clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-    privateKey: privateKey,
-  })
-});
 const db = admin.firestore();
 
 // --- ৩. কনফিগারেশন ---
@@ -36,12 +43,18 @@ const BASE_URL = 'http://185.190.142.81';
 const HEADERS = { 'X-API-Key': API_KEY };
 
 const bot = new TelegramBot(BOT_TOKEN, { polling: true });
+
+// বটের ইন্টারনাল এরর ধরার জন্য লগিং
+bot.on('polling_error', (error) => {
+    console.log("⚠️ Telegram Polling Error: ", error.message);
+});
+
 let adminState = {};
 const userLastOrder = new Map();
 const activePolls = new Map(); 
 const deliveredOtps = new Set(); 
 
-// --- ৪. ডাটাবেস ফাংশনসমূহ ---
+// --- ৪. ডাটাবেস ফাংশনসমূহ (লগিং সহ) ---
 
 async function ensureUser(user) {
     if (!user || !user.id) return;
@@ -57,7 +70,7 @@ async function ensureUser(user) {
                 joined: new Date().toISOString() 
             });
         }
-    } catch(e){}
+    } catch(e){ console.error("DB Error (ensureUser):", e.message); }
 }
 
 async function getUserStats(userId) {
@@ -65,7 +78,10 @@ async function getUserStats(userId) {
         const doc = await db.collection('users').doc(String(userId)).get();
         if (doc.exists) return doc.data();
         return { total_numbers: 0, total_otps: 0 };
-    } catch(e) { return { total_numbers: 0, total_otps: 0 }; }
+    } catch(e) { 
+        console.error("DB Error (getUserStats):", e.message);
+        return { total_numbers: 0, total_otps: 0 }; 
+    }
 }
 
 async function updateUserStat(userId, type) {
@@ -97,10 +113,13 @@ async function loadRanges() {
     try {
         const doc = await db.collection('bot_settings').doc('platforms').get();
         return doc.exists ? doc.data() : {};
-    } catch(e){ return {}; }
+    } catch(e){ 
+        console.error("DB Error (loadRanges):", e.message);
+        return {}; 
+    }
 }
 async function saveRanges(data) {
-    try { await db.collection('bot_settings').doc('platforms').set(data); } catch(e){}
+    try { await db.collection('bot_settings').doc('platforms').set(data); } catch(e){ console.error("DB Error (saveRanges):", e.message); }
 }
 
 async function loadForceSubs() {
@@ -179,7 +198,7 @@ function getAdminMenu() {
     };
 }
 
-// --- ৬. অটো-পোলিং ও ক্লিন OTP মেসেজ (মার্ক করা লেখা রিমুভড) ---
+// --- ৬. অটো-পোলিং ও ক্লিন OTP মেসেজ ---
 function startOtpPolling(chatId, msgId, numId, phone, plat, country, attempt = 0) {
     if (!activePolls.has(numId) || deliveredOtps.has(numId)) return; 
 
@@ -200,10 +219,8 @@ function startOtpPolling(chatId, msgId, numId, phone, plat, country, attempt = 0
                 
                 const boxNumber = `╔════════════════════╗\n║ 📱 \`${formatPhone}\`\n╚════════════════════╝`;
                 
-                // ১. Generating মেসেজ আপডেট
                 bot.editMessageText(`✅ *Number Generated!*\n\n🌍 *Country:* ${country}\n\n${boxNumber}`, { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown' }).catch(()=>{});
 
-                // ২. ইউজারের জন্য ক্লিন OTP মেসেজ (কোনো এক্সট্রা টেক্সট নেই)
                 const copyFullText = `Platform: ${platName}\nCountry: ${country}\nNumber: ${formatPhone}\nOTP: ${otpCode}`;
                 const userMarkup = {
                     inline_keyboard: [
@@ -215,12 +232,10 @@ function startOtpPolling(chatId, msgId, numId, phone, plat, country, attempt = 0
                 
                 bot.sendMessage(chatId, `🌍 *Country:* ${country}\n\n${boxNumber}`, { parse_mode: 'Markdown', reply_markup: userMarkup });
                 
-                // Stats Update
                 updateTraffic(plat, country);
                 updateUserStat(chatId, 'otp');
                 updateGlobalStats('success');
 
-                // ৩. গ্রুপে মেসেজ পাঠানো (হাইড নাম্বার, ক্লিন লেআউট)
                 const maskedPhone = maskNumber(phone);
                 const groupBoxNumber = `╔════════════════════╗\n║ 📱 \`${maskedPhone}\`\n╚════════════════════╝`;
                 const groupMarkup = {
@@ -276,7 +291,7 @@ async function checkForceSub(chatId) {
     return true;
 }
 
-// --- ৮. কমান্ড এবং মেসেজ লজিক (স্টেট ট্র্যাপ ফিক্সড) ---
+// --- ৮. কমান্ড এবং মেসেজ লজিক ---
 bot.onText(/\/start/, async (msg) => {
     await ensureUser(msg.from);
     if (!(await checkForceSub(msg.chat.id))) return;
@@ -290,14 +305,12 @@ bot.on('message', async (msg) => {
     const text = msg.text;
     if (!text || text.startsWith('/')) return;
 
-    // 🔥 STATE TRAP FIX 🔥: কোনো মেনু বাটনে ক্লিক করলে আগের কমান্ড অটো ক্যানসেল হবে
     const menuButtons = ["📱 GET NUMBER", "📥 INBOX", "📊 TRAFFIC", "🔐 2FA AUTHENTICATOR", "👤 PROFILE INFO", "🎧 SUPPORT", "🛠️ ADMIN PANEL"];
     
     if (menuButtons.includes(text)) {
-        if (adminState[chatId]) delete adminState[chatId]; // Escape from trap
+        if (adminState[chatId]) delete adminState[chatId]; 
     } 
     else if (adminState[chatId]) {
-        // --- Admin Input Processing ---
         const state = adminState[chatId];
         
         if (state.action === 'wait_2fa_secret') {
@@ -366,7 +379,6 @@ bot.on('message', async (msg) => {
 
     if (!(await checkForceSub(chatId))) return;
 
-    // --- ইউজার বাটনসমূহ ---
     if (text === "🛠️ ADMIN PANEL" && chatId === ADMIN_ID) {
         bot.sendMessage(chatId, "🛠 *Admin Control Panel*\n\nSelect an option below:", { parse_mode: 'Markdown', reply_markup: getAdminMenu() });
     }
@@ -464,7 +476,6 @@ bot.on('callback_query', async (query) => {
         } else bot.answerCallbackQuery(query.id, { text: "⚠️ এখনও সব চ্যানেলে জয়েন করেননি!", show_alert: true });
     }
 
-    // --- Admin Navigation ---
     else if (data === "admin_main" && chatId === ADMIN_ID) {
         bot.editMessageText("🛠 *Admin Control Panel*\n\nSelect an option below:", { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown', reply_markup: getAdminMenu() });
     }
@@ -513,7 +524,6 @@ bot.on('callback_query', async (query) => {
         bot.editMessageText(`✅ ${plat} ডিলিট করা হয়েছে।`, { chat_id: chatId, message_id: msgId, reply_markup: { inline_keyboard: [[{ text: "🔙 Back", callback_data: "adm_sites" }]] } });
     }
     
-    // --- Advanced Range Management ---
     else if (data === "adm_ranges" && chatId === ADMIN_ID) {
         const ranges = await loadRanges();
         let inlineKeyboard = [];
@@ -662,8 +672,7 @@ bot.on('callback_query', async (query) => {
                 const text = `🌍 *Country:* ${country}\n\n${boxNumber}\n\n⏳ _অটোমেটিক OTP চেক করা হচ্ছে..._`;
                 const actionMarkup = {
                     inline_keyboard: [
-                        [{ text: "🔄 Fetch OTP", callback_data: `fetch_otp_${res.data.number_id}` }, { text: "❌ Change Number", callback_data: "change_num" }],
-                        [{ text: "💬 OTP Group", url: `https://t.me/${OTP_GROUP_ID.replace('@', '')}` }]
+                        [{ text: "🔄 Fetch OTP", callback_data: `fetch_otp_${res.data.number_id}` }, { text: "❌ Change Number", callback_data: "change_num" }]
                     ]
                 };
                 
@@ -678,7 +687,7 @@ bot.on('callback_query', async (query) => {
         bot.answerCallbackQuery(query.id);
     }
     
-    // --- Manual Fetch OTP (Force Check) ---
+    // --- Manual Fetch OTP ---
     else if (data.startsWith('fetch_otp_')) {
         const numId = data.split('_')[2];
         const lastOrder = userLastOrder.get(chatId);
@@ -697,4 +706,4 @@ bot.on('callback_query', async (query) => {
     }
 });
 
-console.log("Ultimate Premium BOT v6.0 is Alive & Fully Bug Free!");
+console.log("Ultimate Premium BOT v7.0 is Alive & Optimized!");
