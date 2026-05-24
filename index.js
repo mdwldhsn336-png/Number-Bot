@@ -8,15 +8,21 @@ const { authenticator } = require('otplib');
 // --- ১. Render Express Server ---
 const app = express();
 const PORT = process.env.PORT || 3000;
-app.get('/', (req, res) => res.send('Premium Fire OTP Bot v5.1 is Running!'));
+app.get('/', (req, res) => res.send('Premium Fire OTP Bot v6.0 is Running!'));
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 
-// --- ২. Firebase Database Setup ---
+// --- ২. Firebase Database Setup (Error Proof) ---
+let privateKey = process.env.FIREBASE_PRIVATE_KEY;
+if(privateKey) {
+    // গিটহাব/রেন্ডারে প্রাইভেট কী এর কোটেশন বা স্পেস ফিক্স করার জন্য
+    privateKey = privateKey.replace(/\\n/g, '\n').replace(/^"(.*)"$/, '$1');
+}
+
 admin.initializeApp({
   credential: admin.credential.cert({
     projectId: process.env.FIREBASE_PROJECT_ID,
     clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-    privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'),
+    privateKey: privateKey,
   })
 });
 const db = admin.firestore();
@@ -33,9 +39,9 @@ const bot = new TelegramBot(BOT_TOKEN, { polling: true });
 let adminState = {};
 const userLastOrder = new Map();
 const activePolls = new Map(); 
-const deliveredOtps = new Set();
+const deliveredOtps = new Set(); 
 
-// --- ৪. ফায়ারবেস ডাটাবেস ফাংশনসমূহ (সুপার-অপটিমাইজড) ---
+// --- ৪. ডাটাবেস ফাংশনসমূহ ---
 
 async function ensureUser(user) {
     if (!user || !user.id) return;
@@ -100,10 +106,7 @@ async function saveRanges(data) {
 async function loadForceSubs() {
     try {
         const doc = await db.collection('bot_settings').doc('force_subs').get();
-        if (doc.exists) {
-            const data = doc.data();
-            return { channels: data.channels || [] };
-        }
+        if (doc.exists) return { channels: doc.data().channels || [] };
     } catch(e){}
     return { channels: [] };
 }
@@ -152,9 +155,6 @@ function getPlatIcon(plat) {
     if(p.includes('whats')) return '🟢';
     if(p.includes('tele')) return '✈️';
     if(p.includes('goog')) return '🔴';
-    if(p.includes('tiktok')) return '🎵';
-    if(p.includes('snap')) return '👻';
-    if(p.includes('x') || p.includes('twitter')) return '🐦';
     return '💬'; 
 }
 
@@ -179,10 +179,9 @@ function getAdminMenu() {
     };
 }
 
-// --- ৬. অটো-পোলিং ও সেপারেট OTP মেসেজ (ইউজার নেম হাইড করা হয়েছে) ---
+// --- ৬. অটো-পোলিং ও ক্লিন OTP মেসেজ (মার্ক করা লেখা রিমুভড) ---
 function startOtpPolling(chatId, msgId, numId, phone, plat, country, attempt = 0) {
-    if (!activePolls.has(numId)) return; 
-    if (deliveredOtps.has(numId)) return; 
+    if (!activePolls.has(numId) || deliveredOtps.has(numId)) return; 
 
     setTimeout(async () => {
         if (!activePolls.has(numId) || deliveredOtps.has(numId)) return;
@@ -198,15 +197,13 @@ function startOtpPolling(chatId, msgId, numId, phone, plat, country, attempt = 0
                 const otpCode = res.data.otp;
                 const platName = plat.charAt(0).toUpperCase() + plat.slice(1);
                 const formatPhone = phone.startsWith('+') ? phone : '+' + phone;
-                const icon = getPlatIcon(plat);
                 
                 const boxNumber = `╔════════════════════╗\n║ 📱 \`${formatPhone}\`\n╚════════════════════╝`;
                 
-                // ১. প্রথম Generating মেসেজটি আপডেট হয়ে Success দেখাবে
-                const successText = `✅ *Number Generated!*\n\n🌍 *Country:* ${country}\n\n${boxNumber}`;
-                bot.editMessageText(successText, { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown' }).catch(()=>{});
+                // ১. Generating মেসেজ আপডেট
+                bot.editMessageText(`✅ *Number Generated!*\n\n🌍 *Country:* ${country}\n\n${boxNumber}`, { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown' }).catch(()=>{});
 
-                // ২. ইউজারের জন্য আলাদা OTP মেসেজ
+                // ২. ইউজারের জন্য ক্লিন OTP মেসেজ (কোনো এক্সট্রা টেক্সট নেই)
                 const copyFullText = `Platform: ${platName}\nCountry: ${country}\nNumber: ${formatPhone}\nOTP: ${otpCode}`;
                 const userMarkup = {
                     inline_keyboard: [
@@ -215,26 +212,24 @@ function startOtpPolling(chatId, msgId, numId, phone, plat, country, attempt = 0
                         [{ text: "💬 OTP Group", url: `https://t.me/${OTP_GROUP_ID.replace('@', '')}` }]
                     ]
                 };
-                const newOtpMsg = `🌍 *Country:* ${country}\n\n${boxNumber}`;
-                bot.sendMessage(chatId, newOtpMsg, { parse_mode: 'Markdown', reply_markup: userMarkup });
                 
-                // ৩. Stats Update
+                bot.sendMessage(chatId, `🌍 *Country:* ${country}\n\n${boxNumber}`, { parse_mode: 'Markdown', reply_markup: userMarkup });
+                
+                // Stats Update
                 updateTraffic(plat, country);
                 updateUserStat(chatId, 'otp');
                 updateGlobalStats('success');
 
-                // ৪. গ্রুপে মেসেজ পাঠানো (হাইড নাম্বার এবং ইউজারের নাম ছাড়া)
+                // ৩. গ্রুপে মেসেজ পাঠানো (হাইড নাম্বার, ক্লিন লেআউট)
                 const maskedPhone = maskNumber(phone);
                 const groupBoxNumber = `╔════════════════════╗\n║ 📱 \`${maskedPhone}\`\n╚════════════════════╝`;
                 const groupMarkup = {
                     inline_keyboard: [
-                        [{ text: `📋 🗑️ ${otpCode}`, copy_text: { text: otpCode } }],
-                        [{ text: `📋 📄 Copy Full Message`, copy_text: { text: copyFullText } }]
+                        [{ text: `📋 🗑️ ${otpCode}`, copy_text: { text: otpCode } }]
                     ]
                 };
-                const groupText = `🌍 *Country:* ${country}\n\n${groupBoxNumber}\n\n${icon} *${platName} OTP:*\n\`${otpCode}\``; // User name removed
-                bot.sendMessage(OTP_GROUP_ID, groupText, { parse_mode: 'Markdown', reply_markup: groupMarkup }).catch(()=>{});
                 
+                bot.sendMessage(OTP_GROUP_ID, `🌍 *Country:* ${country}\n\n${groupBoxNumber}`, { parse_mode: 'Markdown', reply_markup: groupMarkup }).catch(()=>{});
                 return;
             }
         } catch (err) {}
@@ -243,8 +238,7 @@ function startOtpPolling(chatId, msgId, numId, phone, plat, country, attempt = 0
             activePolls.delete(numId);
             updateGlobalStats('failed');
             const formatPhone = phone.startsWith('+') ? phone : '+' + phone;
-            const failText = `⚠️ *OTP Timeout!*\n\n🌍 *Country:* ${country}\n\n╔════════════════════╗\n║ 📱 \`${formatPhone}\`\n╚════════════════════╝\n\n_৩ মিনিটের মধ্যে কোনো OTP আসেনি। Change Number এ ক্লিক করে নতুন নাম্বার নিন।_`;
-            bot.editMessageText(failText, { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown' }).catch(()=>{});
+            bot.editMessageText(`⚠️ *OTP Timeout!*\n\n🌍 *Country:* ${country}\n\n╔════════════════════╗\n║ 📱 \`${formatPhone}\`\n╚════════════════════╝\n\n_৩ মিনিটের মধ্যে কোনো OTP আসেনি। Change Number এ ক্লিক করে নতুন নাম্বার নিন।_`, { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown' }).catch(()=>{});
             return;
         }
 
@@ -282,11 +276,10 @@ async function checkForceSub(chatId) {
     return true;
 }
 
-// --- ৮. কমান্ড এবং মেসেজ লজিক ---
+// --- ৮. কমান্ড এবং মেসেজ লজিক (স্টেট ট্র্যাপ ফিক্সড) ---
 bot.onText(/\/start/, async (msg) => {
     await ensureUser(msg.from);
     if (!(await checkForceSub(msg.chat.id))) return;
-    
     const welcomeMsg = `🌟 *WELCOME TO PREMIUM FIRE OTP BOT* 🌟\n\n👋 Hello, *${msg.from.first_name}*!\n\n🚀 _Get unlimited virtual numbers and instant OTPs for any platform in seconds._\n\n👇 Please choose an option from the menu below:`;
     bot.sendMessage(msg.chat.id, welcomeMsg, { parse_mode: 'Markdown', ...getMainMenu(msg.chat.id) });
 });
@@ -297,8 +290,14 @@ bot.on('message', async (msg) => {
     const text = msg.text;
     if (!text || text.startsWith('/')) return;
 
-    // --- Admin State Handler ---
-    if (adminState[chatId]) {
+    // 🔥 STATE TRAP FIX 🔥: কোনো মেনু বাটনে ক্লিক করলে আগের কমান্ড অটো ক্যানসেল হবে
+    const menuButtons = ["📱 GET NUMBER", "📥 INBOX", "📊 TRAFFIC", "🔐 2FA AUTHENTICATOR", "👤 PROFILE INFO", "🎧 SUPPORT", "🛠️ ADMIN PANEL"];
+    
+    if (menuButtons.includes(text)) {
+        if (adminState[chatId]) delete adminState[chatId]; // Escape from trap
+    } 
+    else if (adminState[chatId]) {
+        // --- Admin Input Processing ---
         const state = adminState[chatId];
         
         if (state.action === 'wait_2fa_secret') {
@@ -308,14 +307,11 @@ bot.on('message', async (msg) => {
                 const saved2fa = await get2FA(chatId);
                 saved2fa.push({ secret: secret, added: new Date().toISOString() });
                 await save2FA(chatId, saved2fa);
-                bot.sendMessage(chatId, `✅ *2FA Secret সেভ হয়েছে!*\n\n'🔐 2FA AUTHENTICATOR' থেকে OTP নিতে পারবেন।`, { parse_mode: 'Markdown' });
-            } catch (e) {
-                bot.sendMessage(chatId, `❌ *ভুল সিক্রেট কোড!*`, { parse_mode: 'Markdown' });
-            }
+                bot.sendMessage(chatId, `✅ *2FA Secret সেভ হয়েছে!*`, { parse_mode: 'Markdown' });
+            } catch (e) { bot.sendMessage(chatId, `❌ *ভুল সিক্রেট কোড!*`, { parse_mode: 'Markdown' }); }
             delete adminState[chatId]; return;
         }
-        
-        if (state.action === 'wait_site_add') {
+        else if (state.action === 'wait_site_add') {
             const ranges = await loadRanges();
             if (!ranges[text]) ranges[text] = {};
             await saveRanges(ranges);
@@ -335,19 +331,12 @@ bot.on('message', async (msg) => {
             await saveRanges(ranges);
             bot.sendMessage(chatId, `✅ *${state.platform}* এর জন্য রেঞ্জ সেভ হয়েছে!`, { parse_mode: 'Markdown' });
             
-            // Broadcast
             const icon = getPlatIcon(state.platform);
             const platName = state.platform.charAt(0).toUpperCase() + state.platform.slice(1);
             const broadcastMsg = `📢 *NEW NUMBER STOCKED!*\n\n${icon} *Platform:* ${platName}\n🌍 *Country:* ${state.country}\n\n🔥 _Go to "GET NUMBER" and grab your numbers now!_`;
-            
             try {
                 const users = await db.collection('users').get();
-                let sentCount = 0;
-                users.forEach(doc => {
-                    bot.sendMessage(doc.id, broadcastMsg, { parse_mode: 'Markdown' }).catch(()=>{});
-                    sentCount++;
-                });
-                bot.sendMessage(chatId, `✅ Broadcast sent to ${sentCount} users.`, { parse_mode: 'Markdown' });
+                users.forEach(doc => bot.sendMessage(doc.id, broadcastMsg, { parse_mode: 'Markdown' }).catch(()=>{}));
             } catch(e){}
             delete adminState[chatId]; return;
         }
@@ -359,22 +348,18 @@ bot.on('message', async (msg) => {
             delete adminState[chatId]; return;
         }
         else if (state.action === 'wait_channel_add') {
-            try {
-                const subs = await loadForceSubs();
-                let channels = subs.channels || [];
-                if (!channels.includes(text)) channels.push(text);
-                await saveForceSubs(channels);
-                bot.sendMessage(chatId, `✅ চ্যানেল ${text} যুক্ত হয়েছে!`);
-            } catch(e){ bot.sendMessage(chatId, "⚠️ Database Error!"); }
+            const subs = await loadForceSubs();
+            let channels = subs.channels || [];
+            if (!channels.includes(text)) channels.push(text);
+            await saveForceSubs(channels);
+            bot.sendMessage(chatId, `✅ চ্যানেল ${text} যুক্ত হয়েছে!`);
             delete adminState[chatId]; return;
         }
         else if (state.action === 'wait_channel_remove') {
-            try {
-                const subs = await loadForceSubs();
-                let newChannels = (subs.channels || []).filter(ch => ch !== text);
-                await saveForceSubs(newChannels);
-                bot.sendMessage(chatId, `🗑️ চ্যানেল ${text} রিমুভ করা হয়েছে!`);
-            } catch(e){ bot.sendMessage(chatId, "⚠️ Database Error!"); }
+            const subs = await loadForceSubs();
+            let newChannels = (subs.channels || []).filter(ch => ch !== text);
+            await saveForceSubs(newChannels);
+            bot.sendMessage(chatId, `🗑️ চ্যানেল ${text} রিমুভ করা হয়েছে!`);
             delete adminState[chatId]; return;
         }
     }
@@ -387,28 +372,21 @@ bot.on('message', async (msg) => {
     }
     else if (text === "📱 GET NUMBER") {
         const ranges = await loadRanges();
-        let inlineKeyboard = [];
-        let row = [];
-        
+        let inlineKeyboard = []; let row = [];
         for (const [plat, countries] of Object.entries(ranges)) {
             if (Object.keys(countries).length > 0) {
-                const icon = getPlatIcon(plat);
-                row.push({ text: `${icon} ${plat.toUpperCase()}`, callback_data: `u_site_${plat}` });
+                row.push({ text: `${getPlatIcon(plat)} ${plat.toUpperCase()}`, callback_data: `u_site_${plat}` });
                 if (row.length === 2) { inlineKeyboard.push(row); row = []; }
             }
         }
         if (row.length > 0) inlineKeyboard.push(row);
         if (inlineKeyboard.length === 0) return bot.sendMessage(chatId, "⚠️ *কোনো সাইট বা নাম্বার স্টকে নেই।*", { parse_mode: 'Markdown' });
-        
         bot.sendMessage(chatId, "📌 *Select a Platform:*", { parse_mode: 'Markdown', reply_markup: { inline_keyboard: inlineKeyboard } });
     }
     else if (text === "📥 INBOX") {
         const sentMsg = await bot.sendMessage(chatId, "⏳ *Fetching OTP...*", { parse_mode: 'Markdown' });
         const lastOrder = userLastOrder.get(chatId);
-        
-        if (!lastOrder) {
-            return bot.editMessageText("⚠️ *OTP Not Found!*\n\n_You haven't requested any numbers recently._", { chat_id: chatId, message_id: sentMsg.message_id, parse_mode: 'Markdown' });
-        }
+        if (!lastOrder) return bot.editMessageText("⚠️ *OTP Not Found!*\n\n_You haven't requested any numbers recently._", { chat_id: chatId, message_id: sentMsg.message_id, parse_mode: 'Markdown' });
         
         try {
             const res = await axios.get(`${BASE_URL}/api/v1/numbers/${lastOrder.numId}/sms`, { headers: HEADERS, timeout: 5000 });
@@ -423,28 +401,21 @@ bot.on('message', async (msg) => {
                         [{ text: `📋 📄 Copy Full Message`, copy_text: { text: `Platform: ${platName}\nCountry: ${lastOrder.country}\nNumber: ${formatPhone}\nOTP: ${res.data.otp}` } }]
                     ]
                 };
-                
-                const inboxText = `📥 *Latest Inbox Found:*\n\n🌍 *Country:* ${lastOrder.country}\n\n${boxNumber}`;
-                bot.editMessageText(inboxText, { chat_id: chatId, message_id: sentMsg.message_id, parse_mode: 'Markdown', reply_markup: replyMarkup });
+                bot.editMessageText(`📥 *Latest Inbox Found:*\n\n🌍 *Country:* ${lastOrder.country}\n\n${boxNumber}`, { chat_id: chatId, message_id: sentMsg.message_id, parse_mode: 'Markdown', reply_markup: replyMarkup });
             } else {
                 bot.editMessageText("⚠️ *OTP Not Found!*\n\n_Still waiting or session expired._", { chat_id: chatId, message_id: sentMsg.message_id, parse_mode: 'Markdown' });
             }
-        } catch (e) {
-             bot.editMessageText("⚠️ *OTP Not Found!*\n\n_Server connection error._", { chat_id: chatId, message_id: sentMsg.message_id, parse_mode: 'Markdown' });
-        }
+        } catch (e) { bot.editMessageText("⚠️ *OTP Not Found!*\n\n_Server connection error._", { chat_id: chatId, message_id: sentMsg.message_id, parse_mode: 'Markdown' }); }
     }
     else if (text === "📊 TRAFFIC") {
         const traffic = await getTraffic();
         if (Object.keys(traffic).length === 0) return bot.sendMessage(chatId, "⚠️ *এখনও কোনো ট্রাফিক ডাটা নেই।*", { parse_mode: 'Markdown' });
-        
         let sorted = Object.entries(traffic).sort((a, b) => b[1] - a[1]);
         let msgText = "📊 *GLOBAL OTP TRAFFIC*\n\n";
-        sorted.forEach(([key, count], index) => {
-            msgText += `*${index + 1}.* ${key} ➔ \`${count} OTPs\`\n`;
-        });
+        sorted.forEach(([key, count], index) => { msgText += `*${index + 1}.* ${key} ➔ \`${count} OTPs\`\n`; });
         bot.sendMessage(chatId, msgText, { parse_mode: 'Markdown' });
     }
-    else if (text === "👤 PROFILE INFO" || text.includes("PROFILE INFO")) {
+    else if (text === "👤 PROFILE INFO") {
         try {
             const stats = await getUserStats(chatId);
             const p = msg.from;
@@ -457,14 +428,11 @@ bot.on('message', async (msg) => {
                                 `💬 *Total OTPs:* \`${stats.total_otps || 0}\`\n\n` +
                                 `_Keep enjoying the premium service!_`;
             bot.sendMessage(chatId, profileText, { parse_mode: 'Markdown' });
-        } catch(e) {
-            bot.sendMessage(chatId, "⚠️ *Profile loading error.* Try again.", { parse_mode: 'Markdown' });
-        }
+        } catch(e) { bot.sendMessage(chatId, "⚠️ *Profile loading error.* Try again.", { parse_mode: 'Markdown' }); }
     }
     else if (text === "🔐 2FA AUTHENTICATOR") {
         const saved2fa = await get2FA(chatId);
         let markup = { inline_keyboard: [[{ text: "➕ Add New 2FA Secret", callback_data: "add_2fa" }]] };
-        
         if (saved2fa.length === 0) {
             bot.sendMessage(chatId, "🔐 *2FA Authenticator*\n\nআপনার কোনো 2FA সিক্রেট কোড সেভ করা নেই।", { parse_mode: 'Markdown', reply_markup: markup });
         } else {
@@ -475,12 +443,11 @@ bot.on('message', async (msg) => {
                     { text: `🗑️ Delete`, callback_data: `del_2fa_${index}` }
                 ]);
             });
-            bot.sendMessage(chatId, "🔐 *2FA Authenticator*\n\nআপনার সেভ করা 2FA অ্যাকাউন্টগুলো নিচে দেওয়া হলো। OTP পেতে 'Key' বাটনে ক্লিক করুন:", { parse_mode: 'Markdown', reply_markup: markup });
+            bot.sendMessage(chatId, "🔐 *2FA Authenticator*\n\nআপনার সেভ করা 2FA অ্যাকাউন্টগুলো নিচে দেওয়া হলো:", { parse_mode: 'Markdown', reply_markup: markup });
         }
     }
     else if (text === "🎧 SUPPORT") {
-        let markup = { inline_keyboard: [[{ text: "👨‍💻 Contact Admin", url: `tg://user?id=${ADMIN_ID}` }]] };
-        bot.sendMessage(chatId, "🎧 *SUPPORT CENTER*\n\nবট ব্যবহার করতে কোনো সমস্যা হলে বা হেল্প লাগলে সরাসরি অ্যাডমিনের ইনবক্সে মেসেজ দিন:", { parse_mode: 'Markdown', reply_markup: markup });
+        bot.sendMessage(chatId, "🎧 *SUPPORT CENTER*\n\nবট ব্যবহার করতে কোনো সমস্যা হলে বা হেল্প লাগলে সরাসরি অ্যাডমিনের ইনবক্সে মেসেজ দিন:", { parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: "👨‍💻 Contact Admin", url: `tg://user?id=${ADMIN_ID}` }]] } });
     }
 });
 
@@ -507,7 +474,7 @@ bot.on('callback_query', async (query) => {
             const res = await axios.get(`${BASE_URL}/api/v1/balance`, { headers: HEADERS });
             if(res.data.success) {
                 bot.editMessageText(`💰 *API Balance:* \`${res.data.balance}\` ৳`, { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: "🔙 Back", callback_data: "admin_main" }]] }});
-            } else throw new Error();
+            }
         } catch(e) { bot.answerCallbackQuery(query.id, { text: "Error getting balance", show_alert:true }); }
     }
     else if (data === "adm_dash" && chatId === ADMIN_ID) {
@@ -515,25 +482,15 @@ bot.on('callback_query', async (query) => {
             const usersSnap = await db.collection('users').get();
             const statDoc = await db.collection('bot_settings').doc('global_stats').get();
             const gStats = statDoc.exists ? statDoc.data() : { success: 0, pending: 0, failed: 0 };
-            
-            // API Connected Dashboard Sync
             let apiBal = "Loading...";
             try {
                 const balRes = await axios.get(`${BASE_URL}/api/v1/balance`, { headers: HEADERS, timeout: 5000 });
                 if(balRes.data.success) apiBal = balRes.data.balance + " ৳";
-            } catch(e){ apiBal = "API Error"; }
+            } catch(e){ apiBal = "Error"; }
 
-            const dashText = `📊 *BOT DASHBOARD*\n\n` +
-                             `💰 *API Balance:* \`${apiBal}\`\n` +
-                             `👥 *Total Users:* \`${usersSnap.size}\`\n\n` +
-                             `📈 *Order Stats:*\n` +
-                             `✅ Success: \`${gStats.success || 0}\`\n` +
-                             `⏳ Pending: \`${gStats.pending || 0}\`\n` +
-                             `❌ Failed: \`${gStats.failed || 0}\``;
+            const dashText = `📊 *BOT DASHBOARD*\n\n💰 *API Balance:* \`${apiBal}\`\n👥 *Total Users:* \`${usersSnap.size}\`\n\n📈 *Order Stats:*\n✅ Success: \`${gStats.success || 0}\`\n⏳ Pending: \`${gStats.pending || 0}\`\n❌ Failed: \`${gStats.failed || 0}\``;
             bot.editMessageText(dashText, { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: "🔙 Back", callback_data: "admin_main" }]] }});
-        } catch (e) {
-            bot.answerCallbackQuery(query.id, { text: "Error loading dashboard", show_alert: true });
-        }
+        } catch (e) {}
     }
     else if (data === "adm_sites" && chatId === ADMIN_ID) {
         const ranges = await loadRanges();
@@ -589,7 +546,6 @@ bot.on('callback_query', async (query) => {
         const parts = data.split('_'); const plat = parts[2]; const country = parts.slice(3).join('_');
         const ranges = await loadRanges();
         const currentRange = ranges[plat][country] || "Not set";
-        
         let inlineKeyboard = [
             [{ text: "✏️ Edit Range", callback_data: `ar_ed_${plat}_${country}` }, { text: "❌ Delete Country", callback_data: `ar_del_${plat}_${country}` }],
             [{ text: "🔙 Back", callback_data: `ar_p_${plat}` }]
@@ -629,7 +585,7 @@ bot.on('callback_query', async (query) => {
     // --- 2FA Config ---
     else if (data === "add_2fa") {
         adminState[chatId] = { action: 'wait_2fa_secret' };
-        bot.sendMessage(chatId, "✏️ *আপনার 2FA Secret Key টি পাঠান:*\n_(যেমন: JBSWY3DPEHPK3PXP)_", { parse_mode: 'Markdown' });
+        bot.sendMessage(chatId, "✏️ *আপনার 2FA Secret Key টি পাঠান:*", { parse_mode: 'Markdown' });
         bot.answerCallbackQuery(query.id);
     }
     else if (data.startsWith('get_2fa_')) {
@@ -638,7 +594,7 @@ bot.on('callback_query', async (query) => {
         if (saved2fa[index]) {
             const token = authenticator.generate(saved2fa[index].secret);
             const markup = { inline_keyboard: [[{ text: `📋 🗑️ Copy Code: ${token}`, copy_text: { text: token } }]] };
-            bot.sendMessage(chatId, `🔐 *Live 2FA OTP Code:*\n\n\`${token}\`\n\n_(নিচের বাটনে ক্লিক করে কপি করুন)_`, { parse_mode: 'Markdown', reply_markup: markup });
+            bot.sendMessage(chatId, `🔐 *Live 2FA OTP Code:*\n\n\`${token}\``, { parse_mode: 'Markdown', reply_markup: markup });
         }
         bot.answerCallbackQuery(query.id);
     }
@@ -701,29 +657,24 @@ bot.on('callback_query', async (query) => {
                 updateGlobalStats('pending');
 
                 const formatPhone = res.data.number.startsWith('+') ? res.data.number : '+' + res.data.number;
-                
-                // ডাবল লাইন বক্স ডিজাইন
                 const boxNumber = `╔════════════════════╗\n║ 📱 \`${formatPhone}\`\n╚════════════════════╝`;
                 
                 const text = `🌍 *Country:* ${country}\n\n${boxNumber}\n\n⏳ _অটোমেটিক OTP চেক করা হচ্ছে..._`;
-                
                 const actionMarkup = {
                     inline_keyboard: [
-                        [{ text: "🔄 Fetch OTP", callback_data: `fetch_otp_${res.data.number_id}` }, { text: "❌ Change Number", callback_data: "change_num" }]
+                        [{ text: "🔄 Fetch OTP", callback_data: `fetch_otp_${res.data.number_id}` }, { text: "❌ Change Number", callback_data: "change_num" }],
+                        [{ text: "💬 OTP Group", url: `https://t.me/${OTP_GROUP_ID.replace('@', '')}` }]
                     ]
                 };
                 
                 bot.editMessageText(text, { chat_id: chatId, message_id: sentMsg.message_id, parse_mode: 'Markdown', reply_markup: actionMarkup });
                 
-                // Start Strict Polling Lock System
                 activePolls.set(res.data.number_id, true);
                 startOtpPolling(chatId, sentMsg.message_id, res.data.number_id, res.data.number, plat, country);
             } else {
                 bot.editMessageText("❌ *এই মুহূর্তে এই কান্ট্রির কোনো নাম্বার স্টকে নেই।*", { chat_id: chatId, message_id: sentMsg.message_id, parse_mode: 'Markdown' });
             }
-        } catch (error) {
-            bot.editMessageText("⚠️ *API সার্ভার রেসপন্স করছে না।*", { chat_id: chatId, message_id: sentMsg.message_id, parse_mode: 'Markdown' });
-        }
+        } catch (error) { bot.editMessageText("⚠️ *API সার্ভার রেসপন্স করছে না।*", { chat_id: chatId, message_id: sentMsg.message_id, parse_mode: 'Markdown' }); }
         bot.answerCallbackQuery(query.id);
     }
     
@@ -738,7 +689,7 @@ bot.on('callback_query', async (query) => {
         try {
             const res = await axios.get(`${BASE_URL}/api/v1/numbers/${numId}/sms`, { headers: HEADERS, timeout: 5000 });
             if (res.data.success && res.data.otp) {
-                // পোলিং নিজে থেকেই ক্যাচ করবে এবং এডিট করবে
+                // পোলিং নিজে থেকেই ক্যাচ করবে
             } else {
                 bot.answerCallbackQuery(query.id, { text: "⚠️ OTP Not Found! Auto-checking continues...", show_alert: true });
             }
@@ -746,4 +697,4 @@ bot.on('callback_query', async (query) => {
     }
 });
 
-console.log("Ultimate Premium BOT v5.1 is Alive & Fully Bug Free!");
+console.log("Ultimate Premium BOT v6.0 is Alive & Fully Bug Free!");
