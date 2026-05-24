@@ -1,4 +1,4 @@
-require('dotenv').config();
+Require('dotenv').config();
 const TelegramBot = require('node-telegram-bot-api');
 const axios = require('axios');
 const admin = require('firebase-admin');
@@ -37,7 +37,6 @@ const BOT_TOKEN = process.env.BOT_TOKEN;
 const API_KEY = process.env.API_KEY;
 const ADMIN_ID = parseInt(process.env.ADMIN_ID);
 const OTP_GROUP_ID = "@otp_number_grp"; 
-// BASE_URL আপডেট করা হয়েছে নতুন IP অনুযায়ী
 const BASE_URL = 'http://63.141.255.227';
 const HEADERS = { 'X-API-Key': API_KEY };
 
