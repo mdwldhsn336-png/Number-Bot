@@ -253,7 +253,7 @@ async function checkForceSub(chatId) {
 bot.onText(/\/start/, async (msg) => {
     await ensureUser(msg.from);
     if (!(await checkForceSub(msg.chat.id))) return;
-    const welcomeMsg = `🌟 *WELCOME TO PREMIUM FIRE OTP BOT* 🌟\n\n👋 Hello, *${msg.from.first_name}*!\n\n🚀 _Get unlimited virtual numbers and instant OTPs for any platform in seconds._\n\n👇 Please choose an option from the menu below:`;
+    const welcomeMsg = `🐶 Welcome Boss,,\n\n *${msg.from.first_name}*!\n\ OTP গ্রুপ থেকে রেঞ্জ দেখে কাজ করেন। \n\n Best OF Luck,, Boss`;
     bot.sendMessage(msg.chat.id, welcomeMsg, { parse_mode: 'Markdown', ...getMainMenu(msg.chat.id) });
 });
 
@@ -385,7 +385,7 @@ bot.on('message', async (msg) => {
                     const formatPhone = lastOrder.phone.startsWith('+') ? lastOrder.phone : '+' + lastOrder.phone;
                     const boxNumber = `╔════════════════════╗\n║ 📱 \`${formatPhone}\`\n╚════════════════════╝`;
                     const platDisplay = `${getPlatIcon(lastOrder.plat)} ${lastOrder.plat.charAt(0).toUpperCase() + lastOrder.plat.slice(1)}`;
-                    const replyMarkup = { inline_keyboard: [[{ text: `📋 🗑️ ${res.data.otp}`, copy_text: { text: res.data.otp } }]] };
+                    const replyMarkup = { inline_keyboard: [[{ text: ` ${res.data.otp}`, copy_text: { text: res.data.otp } }]] };
                     bot.editMessageText(`📥 *Latest Inbox Found:*\n\n📱 *Platform:* ${platDisplay}\n🌍 *Country:* ${lastOrder.country}\n\n${boxNumber}`, { chat_id: chatId, message_id: sentMsg.message_id, parse_mode: 'Markdown', reply_markup: replyMarkup });
                 } else {
                     bot.editMessageText("⚠️ *OTP Not Found!*\n\n_Still waiting or session expired._", { chat_id: chatId, message_id: sentMsg.message_id, parse_mode: 'Markdown' });
@@ -426,7 +426,7 @@ bot.on('message', async (msg) => {
             bot.sendMessage(chatId, "🎧 *SUPPORT CENTER*\n\nবট ব্যবহার করতে কোনো সমস্যা হলে বা হেল্প লাগলে সরাসরি অ্যাডমিনের ইনবক্সে মেসেজ দিন:", { parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: "👨‍💻 Contact Admin", url: `tg://user?id=${ADMIN_ID}` }]] } });
         }
     } catch (e) {
-        bot.sendMessage(chatId, "⚠️ *অস্থায়ী সার্ভার ত্রুটি!* বাটনটি আবার ক্লিক করুন।", { parse_mode: 'Markdown' });
+        bot.sendMessage(chatId, "⚠️ *Sarver Problem!* বাটনটি আবার ক্লিক করুন।", { parse_mode: 'Markdown' });
     }
 });
 
@@ -440,7 +440,7 @@ bot.on('callback_query', async (query) => {
         if (data === "check_joined") {
             if (await checkForceSub(chatId)) {
                 bot.deleteMessage(chatId, msgId);
-                bot.sendMessage(chatId, "✅ *ধন্যবাদ!*", { parse_mode: 'Markdown', ...getMainMenu(chatId) });
+                bot.sendMessage(chatId, "✅ You are Successfully Verified! \n\n এখন আপনি Number নিয়ে কাজ করতে পারেন।*", { parse_mode: 'Markdown', ...getMainMenu(chatId) });
             } else bot.answerCallbackQuery(query.id, { text: "⚠️ এখনও সব চ্যানেলে জয়েন করেননি!", show_alert: true });
         }
 
@@ -623,7 +623,7 @@ bot.on('callback_query', async (query) => {
             const saved2fa = await get2FA(chatId);
             if (saved2fa[index]) {
                 const token = authenticator.generate(saved2fa[index].secret);
-                const markup = { inline_keyboard: [[{ text: `📋  Copy Code: ${token}`, copy_text: { text: token } }]] };
+                const markup = { inline_keyboard: [[{ text: ` Copy Code: ${token}`, copy_text: { text: token } }]] };
                 bot.sendMessage(chatId, `🔐 *Live 2FA OTP Code:*\n\n\`${token}\``, { parse_mode: 'Markdown', reply_markup: markup });
             }
             bot.answerCallbackQuery(query.id);
@@ -690,7 +690,7 @@ bot.on('callback_query', async (query) => {
                     // Button Order Changed: Change Num on Left, Fetch on Right
                     const actionMarkup = { 
                         inline_keyboard: [[
-                            { text: "❌ Change Number", callback_data: "change_num" },
+                            { text: "🔁 Change Number", callback_data: "change_num" },
                             { text: "🔄 Fetch OTP", callback_data: `fetch_otp_${res.data.number_id}` }
                         ]] 
                     };
@@ -746,21 +746,27 @@ bot.on('callback_query', async (query) => {
                     updateUserStat(chatId, 'otp');
                     updateGlobalStats('success');
                     
-                    const otpMarkup = { inline_keyboard: [[{ text: `📋  ${otpCode}`, copy_text: { text: otpCode } }]] };
+                    // Added OTP Group link below the OTP copy button here
+                    const otpMarkup = { 
+                        inline_keyboard: [
+                            [{ text: ` ${otpCode}`, copy_text: { text: otpCode } }],
+                            [{ text: "💬 OTP Group", url: `https://t.me/${OTP_GROUP_ID.replace('@', '')}` }]
+                        ] 
+                    };
                     
                     // 3a. Success Message
                     bot.editMessageText(`✅ *OTP Received!*\n\n📱 *Platform:* ${platDisplay}\n🌍 *Country:* ${lastOrder.country}\n\n${boxNumber}`, { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown', reply_markup: otpMarkup });
                     
                     const maskedPhone = maskNumber(lastOrder.phone);
                     const groupBoxNumber = `╔════════════════════╗\n║ 📱 \`${maskedPhone}\`\n╚════════════════════╝`;
-                    const groupMarkup = { inline_keyboard: [[{ text: `📋  ${otpCode}`, copy_text: { text: otpCode } }]] };
+                    const groupMarkup = { inline_keyboard: [[{ text: `  ${otpCode}`, copy_text: { text: otpCode } }]] };
                     bot.sendMessage(OTP_GROUP_ID, `📱 *Platform:* ${platDisplay}\n🌍 *Country:* ${lastOrder.country}\n\n${groupBoxNumber}`, { parse_mode: 'Markdown', reply_markup: groupMarkup }).catch(()=>{});
                 
                 } else {
                     // 3b. Code Not Found Message (Restoring buttons)
                     const actionMarkup = { 
                         inline_keyboard: [[
-                            { text: "❌ Change Number", callback_data: "change_num" },
+                            { text: "🔁 Change Number", callback_data: "change_num" },
                             { text: "🔄 Fetch OTP", callback_data: `fetch_otp_${numId}` }
                         ]] 
                     };
@@ -769,7 +775,7 @@ bot.on('callback_query', async (query) => {
             } catch (e) {
                 const actionMarkup = { 
                     inline_keyboard: [[
-                        { text: "❌ Change Number", callback_data: "change_num" },
+                        { text: "🔁 Change Number", callback_data: "change_num" },
                         { text: "🔄 Fetch OTP", callback_data: `fetch_otp_${numId}` }
                     ]] 
                 };
