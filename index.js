@@ -15,7 +15,7 @@ const PORT = process.env.PORT || 3000;
 const SERVER_URL = process.env.SERVER_URL; 
 
 app.use(express.json());
-app.get('/', (req, res) => res.send('Premium Fire OTP Bot v10.0 (MK Network Final SMS Logic Fixed) is Running!'));
+app.get('/', (req, res) => res.send('Premium Fire OTP Bot v9.8 (Final MK Network Fix) is Running!'));
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 
 // --- MongoDB Setup ---
@@ -72,7 +72,7 @@ const activePolls = new Map();
 const deliveredOtps = new Set();
 
 // ==========================================
-// 🌐 MK NETWORK V3 SETUP (Fixed Security Headers)
+// 🌐 MK NETWORK V3 SETUP
 // ==========================================
 const MK_COOKIES = process.env.MK_COOKIES || "PHPSESSID=ci4itr3sbltg20bpmst0tksv52; mk_remember=21dd02e264eeba74886d9d23%3Aab042c38088fb96c7dea474770d54308d976eab68aa391a16f48ba7198cec0c6";
 const MK_API_URL = "https://mknetworkbd.com/API/api_handler_test.php";
@@ -88,9 +88,9 @@ async function mkRequest(action, extraParams = {}) {
     const headers = {
         'Cookie': MK_COOKIES,
         'Content-Type': 'application/x-www-form-urlencoded',
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
         'Accept': 'application/json, text/plain, */*',
-        'X-Requested-With': 'XMLHttpRequest', // ব্রাউজার বাইপাস
+        'X-Requested-With': 'XMLHttpRequest', 
         'Origin': 'https://mknetworkbd.com',
         'Referer': 'https://mknetworkbd.com/getnum_test.php'
     };
@@ -440,31 +440,17 @@ bot.on('message', async (msg) => {
                     const hist = await mkRequest('get_history', { filter: 'all', page: 1, limit: 15, date: dateFilter });
                     
                     if (hist && Array.isArray(hist.data)) {
-                        // নাম্বারের শেষ ৬ ডিজিট দিয়ে অনেক বেশি ফ্লেক্সিবল সার্চ
-                        const phoneDigits = lastOrder.phone.replace(/\D/g,'').slice(-6); 
-                        const matched = hist.data.find(o => {
-                            const p = String(o.phone_number || o.number || o.phone || '');
-                            return p.replace(/\D/g,'').includes(phoneDigits) || String(o.id) === String(lastOrder.numId);
-                        });
+                        const phoneDigits = lastOrder.phone.replace(/\D/g,'').slice(-6);
+                        const matched = hist.data.find(o => o.phone_number && o.phone_number.replace(/\D/g,'').includes(phoneDigits));
                         
-                        if (matched) {
-                            // সব সম্ভাব্য ফিল্ড একসাথে জোড়া দেওয়া হলো, যাতে কোনো মেসেজ মিস না হয়
-                            const rawText = `${matched.full_sms || ''} ${matched.sms || ''} ${matched.message || ''} ${matched.otps || ''}`;
-                            
-                            if (rawText.trim().length > 0) {
-                                // স্পেস যুক্ত নাম্বারগুলো ফিক্স করা (যেমন: 790 826 -> 790826)
-                                const cleanText = rawText.replace(/(\d)\s+(?=\d)/g, '$1'); 
-                                const otpMatch = cleanText.match(/\b\d{4,8}\b/);
-                                
-                                if (otpMatch) {
-                                    otpFound = true;
-                                    finalOtp = otpMatch[0];
-                                } else if (rawText.replace(/your|N\/A/gi, '').trim().length > 0) {
-                                    // যদি Regex এ না পায়, কিন্তু মেসেজ থাকে
-                                    otpFound = true;
-                                    finalOtp = rawText.replace(/your|N\/A/gi, '').trim();
-                                }
-                            }
+                        if (matched && matched.status === 'success') {
+                            otpFound = true;
+                            // Full SMS থেকে শুধু কোড ফিল্টার করা
+                            let smsText = matched.full_sms_list ? matched.full_sms_list.split('|||')[0] : (matched.full_sms || '');
+                            if (!smsText && matched.otps) smsText = matched.otps.split('|||')[0];
+                            const matchRegex = smsText.match(/\d{4,8}/);
+                            finalOtp = matchRegex ? matchRegex[0] : (smsText || "Code Not Found");
+                            if (finalOtp.toLowerCase() === 'your') finalOtp = "Code Not Found";
                         }
                     }
                 }
@@ -783,7 +769,6 @@ bot.on('callback_query', async (query) => {
             const ranges = await loadRanges(); 
             const rangeData = ranges[plat][country];
             
-            // Checking the panel seamlessly
             const rangeVal = typeof rangeData === 'string' ? rangeData : rangeData.range;
             const panel = typeof rangeData === 'string' ? 'nexa' : rangeData.panel;
 
@@ -796,7 +781,6 @@ bot.on('callback_query', async (query) => {
                 let finalPhone = null;
                 let apiErrorMsg = "❌ *এই মুহূর্তে এই কান্ট্রির কোনো নাম্বার স্টকে নেই।*";
                 
-                // 🔀 Multi-Panel Routing Logic
                 if (panel === 'nexa') {
                     const res = await apiRequest('post', `${BASE_URL}/api/v1/numbers/get`, { range: rangeVal, format: "international" }, 12000);
                     if (res.data && res.data.success) {
@@ -805,26 +789,20 @@ bot.on('callback_query', async (query) => {
                         finalPhone = res.data.number;
                     }
                 } else if (panel === 'mk') {
-                    // MK API Call with Hidden Security Headers
                     const resData = await mkRequest('get_number', { range: rangeVal });
                     if (resData && resData.status === 'success') {
                         success = true;
                         finalPhone = resData.number;
                         
-                        // Fetching ID from History using Auto-Date
                         const dateFilter = getMkDate();
                         const hist = await mkRequest('get_history', { filter: 'all', page: 1, limit: 15, date: dateFilter });
                         if (hist && Array.isArray(hist.data)) {
                             const phoneDigits = finalPhone.replace(/\D/g,'');
-                            const matched = hist.data.find(o => {
-                                const p = String(o.phone_number || o.number || o.phone || '');
-                                return p.replace(/\D/g,'').includes(phoneDigits);
-                            });
+                            const matched = hist.data.find(o => o.phone_number && o.phone_number.replace(/\D/g,'').includes(phoneDigits));
                             if (matched) numId = matched.id;
                         }
                         if (!numId) numId = finalPhone; 
                     } else if (resData && resData.message) {
-                        // যদি MK থেকে ব্যালেন্স বা অন্য কোনো এরর আসে, সেটা দেখাবে
                         apiErrorMsg = `⚠️ *MK Server:* ${resData.message}`;
                     }
                 }
@@ -858,7 +836,7 @@ bot.on('callback_query', async (query) => {
             bot.answerCallbackQuery(query.id);
         }
 
-        // --- Fetch OTP Logic (Seamless Multi-Panel + 10s Countdown) ---
+        // --- Fetch OTP Logic (Seamless Multi-Panel + Regex Auto OTP Extraction) ---
         else if (data.startsWith('fetch_otp_')) {
             const numId = data.split('fetch_otp_')[1];
             const lastOrder = userLastOrder.get(chatId);
@@ -888,44 +866,44 @@ bot.on('callback_query', async (query) => {
                 
                 if (i % 2 === 0) {
                     try {
-                        let resData;
-                        // 🔀 Multi-Panel OTP Fetching
                         if (panel === 'nexa') {
                             const res = await apiRequest('get', `${BASE_URL}/api/v1/numbers/${numId}/sms`, null, 5000);
-                            resData = res.data;
-                            if (resData && resData.success && resData.otp) {
-                                otpFound = true; otpCode = resData.otp;
+                            if (res.data && res.data.success && res.data.otp) {
+                                otpFound = true; otpCode = res.data.otp;
                             }
                         } else if (panel === 'mk') {
-                            // 1. Sync Request
                             await mkRequest('check_otp').catch(()=>{});
-                            // 2. Fetch history status
                             const dateFilter = getMkDate();
                             const hist = await mkRequest('get_history', { filter: 'all', page: 1, limit: 15, date: dateFilter });
                             
                             if (hist && Array.isArray(hist.data)) {
-                                const phoneDigits = lastOrder.phone.replace(/\D/g,'').slice(-6); 
+                                const phoneDigits = lastOrder.phone.replace(/\D/g,'').slice(-6);
+                                const matched = hist.data.find(o => String(o.id) === String(numId) || (o.phone_number && o.phone_number.replace(/\D/g,'').includes(phoneDigits)));
                                 
-                                const matched = hist.data.find(o => {
-                                    const p = String(o.phone_number || o.number || o.phone || '');
-                                    return p.replace(/\D/g,'').includes(phoneDigits) || String(o.id) === String(numId);
-                                });
-                                
-                                if (matched) {
-                                    // সব ফিল্ড এক করে দেওয়া হলো, যাতে কোনো মেসেজ মিস না যায়
-                                    const rawText = `${matched.full_sms || ''} ${matched.sms || ''} ${matched.message || ''} ${matched.otps || ''}`;
+                                if (matched && matched.status === 'success') {
+                                    otpFound = true;
                                     
-                                    if (rawText.trim().length > 0) {
-                                        const cleanText = rawText.replace(/(\d)\s+(?=\d)/g, '$1'); 
-                                        const otpMatch = cleanText.match(/\b\d{4,8}\b/);
-                                        
-                                        if (otpMatch) {
-                                            otpFound = true;
-                                            otpCode = otpMatch[0];
-                                        } else if (rawText.replace(/your|N\/A/gi, '').trim().length > 0) {
-                                            otpFound = true;
-                                            otpCode = rawText.replace(/your|N\/A/gi, '').trim();
-                                        }
+                                    // 🟢 REGEX PARSER: Get the original SMS text
+                                    let smsText = "";
+                                    if (matched.full_sms_list) {
+                                        smsText = matched.full_sms_list.split('|||')[0];
+                                    } else if (matched.full_sms) {
+                                        smsText = matched.full_sms;
+                                    } else if (matched.otps) {
+                                        smsText = matched.otps.split('|||')[0];
+                                    }
+
+                                    // Extract 4 to 8 digit number automatically
+                                    const matchRegex = smsText.match(/\d{4,8}/);
+                                    if (matchRegex && matchRegex[0]) {
+                                        otpCode = matchRegex[0];
+                                    } else {
+                                        otpCode = smsText || "Code Not Found";
+                                    }
+                                    
+                                    // Safety fallback if it still captures 'your' or empty
+                                    if (otpCode.toLowerCase() === 'your' || otpCode.trim() === '') {
+                                        otpCode = "Code Not Found (Check SMS)";
                                     }
                                 }
                             }
@@ -946,8 +924,6 @@ bot.on('callback_query', async (query) => {
                 updateGlobalStats('success');
                 
                 const platDisplay = `${getPlatIcon(lastOrder.plat)} ${lastOrder.plat.charAt(0).toUpperCase() + lastOrder.plat.slice(1)}`;
-                const formatPhone = lastOrder.phone.startsWith('+') ? lastOrder.phone : '+' + lastOrder.phone;
-                const boxNumber = `╔════════════════════╗\n║ 📱 \`${formatPhone}\`\n╚════════════════════╝`;
                 
                 const otpMarkup = { 
                     inline_keyboard: [
@@ -956,8 +932,7 @@ bot.on('callback_query', async (query) => {
                     ] 
                 };
                 
-                // Added Number Box in Success Message
-                await bot.editMessageText(`🎉 *Congratulations! Boss*\n\n${boxNumber}\n\n✅ *OTP Code:* \`${otpCode}\``, { chat_id: chatId, message_id: countMsgId, parse_mode: 'Markdown', reply_markup: otpMarkup }).catch(()=>{});
+                await bot.editMessageText(`🎉 *Congratulations! Boss*\n\n✅ *OTP Code:* \`${otpCode}\``, { chat_id: chatId, message_id: countMsgId, parse_mode: 'Markdown', reply_markup: otpMarkup }).catch(()=>{});
                 
                 const maskedPhone = maskNumber(lastOrder.phone);
                 const groupBoxNumber = `╔════════════════════╗\n║ 📱 \`${maskedPhone}\`\n╚════════════════════╝`;
@@ -973,4 +948,4 @@ bot.on('callback_query', async (query) => {
 });
 
 loadApiKeys().then(() => console.log("🔑 API Keys loaded from MongoDB."));
-console.log("🚀 Premium Bulletproof Bot v10.0 (MK Network Final SMS Logic Fixed) is Alive!");
+console.log("🚀 Premium Bulletproof Bot v9.8 (Final MK Network Regex Fix) is Alive!");
