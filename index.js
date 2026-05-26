@@ -15,7 +15,7 @@ const PORT = process.env.PORT || 3000;
 const SERVER_URL = process.env.SERVER_URL; 
 
 app.use(express.json());
-app.get('/', (req, res) => res.send('Premium Fire OTP Bot v9.7 (MK Network Fixed) is Running!'));
+app.get('/', (req, res) => res.send('Premium Fire OTP Bot v9.9 (MK Network Logic Updated) is Running!'));
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 
 // --- MongoDB Setup ---
@@ -435,14 +435,27 @@ bot.on('message', async (msg) => {
                         otpFound = true; finalOtp = res.data.otp;
                     }
                 } else if (lastOrder.panel === 'mk') {
+                    // 1. Sync Request
                     await mkRequest('check_otp').catch(()=>{});
+                    // 2. Fetch history status
                     const dateFilter = getMkDate();
                     const hist = await mkRequest('get_history', { filter: 'all', page: 1, limit: 15, date: dateFilter });
+                    
                     if (hist && Array.isArray(hist.data)) {
-                        const phoneDigits = lastOrder.phone.replace(/\D/g,'');
+                        // ফন নাম্বারের শেষ ৪-৫ ডিজিট দিয়ে ম্যাচ করাবো 
+                        const phoneDigits = lastOrder.phone.replace(/\D/g,'').slice(-6); 
                         const matched = hist.data.find(o => o.phone_number && o.phone_number.replace(/\D/g,'').includes(phoneDigits));
-                        if (matched && matched.status === 'success' && matched.otps) {
-                            otpFound = true; finalOtp = matched.otps.split('|||')[0];
+                        
+                        // matched.sms বা matched.full_sms থাকতে পারে, সেফটির জন্য || দিয়ে চেক করা হলো
+                        const smsData = matched ? (matched.full_sms || matched.sms || matched.message) : null;
+                        
+                        if (matched && matched.status === 'success' && smsData) {
+                            otpFound = true;
+                            const fullSms = smsData; // পুরো মেসেজটি এখান থেকে আসবে
+                            
+                            // Regex ব্যবহার করে OTP বের করার লজিক 
+                            const otpMatch = fullSms.match(/(\d{4,6})/); 
+                            finalOtp = otpMatch ? otpMatch[0] : "Code Not Found";
                         }
                     }
                 }
@@ -874,16 +887,25 @@ bot.on('callback_query', async (query) => {
                         } else if (panel === 'mk') {
                             // 1. Sync Request
                             await mkRequest('check_otp').catch(()=>{});
-                            // 2. Fetch history status with required Date
+                            // 2. Fetch history status
                             const dateFilter = getMkDate();
                             const hist = await mkRequest('get_history', { filter: 'all', page: 1, limit: 15, date: dateFilter });
                             
                             if (hist && Array.isArray(hist.data)) {
-                                const phoneDigits = lastOrder.phone.replace(/\D/g,'');
-                                const matched = hist.data.find(o => String(o.id) === String(numId) || (o.phone_number && o.phone_number.replace(/\D/g,'').includes(phoneDigits)));
-                                if (matched && matched.status === 'success' && matched.otps) {
+                                // ফন নাম্বারের শেষ ৪-৫ ডিজিট দিয়ে ম্যাচ করাবো 
+                                const phoneDigits = lastOrder.phone.replace(/\D/g,'').slice(-6); 
+                                const matched = hist.data.find(o => o.phone_number && o.phone_number.replace(/\D/g,'').includes(phoneDigits));
+                                
+                                // matched.sms বা matched.full_sms থাকতে পারে, সেফটির জন্য || দিয়ে চেক করা হলো
+                                const smsData = matched ? (matched.full_sms || matched.sms || matched.message) : null;
+                                
+                                if (matched && matched.status === 'success' && smsData) {
                                     otpFound = true;
-                                    otpCode = matched.otps.split('|||')[0];
+                                    const fullSms = smsData; // পুরো মেসেজটি এখান থেকে আসবে
+                                    
+                                    // Regex ব্যবহার করে OTP বের করার লজিক 
+                                    const otpMatch = fullSms.match(/(\d{4,6})/); 
+                                    otpCode = otpMatch ? otpMatch[0] : "Code Not Found";
                                 }
                             }
                         }
@@ -903,6 +925,8 @@ bot.on('callback_query', async (query) => {
                 updateGlobalStats('success');
                 
                 const platDisplay = `${getPlatIcon(lastOrder.plat)} ${lastOrder.plat.charAt(0).toUpperCase() + lastOrder.plat.slice(1)}`;
+                const formatPhone = lastOrder.phone.startsWith('+') ? lastOrder.phone : '+' + lastOrder.phone;
+                const boxNumber = `╔════════════════════╗\n║ 📱 \`${formatPhone}\`\n╚════════════════════╝`;
                 
                 const otpMarkup = { 
                     inline_keyboard: [
@@ -911,7 +935,8 @@ bot.on('callback_query', async (query) => {
                     ] 
                 };
                 
-                await bot.editMessageText(`🎉 *Congratulations! Boss*\n\n✅ *OTP Code:* \`${otpCode}\``, { chat_id: chatId, message_id: countMsgId, parse_mode: 'Markdown', reply_markup: otpMarkup }).catch(()=>{});
+                // Added Number Box in Success Message
+                await bot.editMessageText(`🎉 *Congratulations! Boss*\n\n${boxNumber}\n\n✅ *OTP Code:* \`${otpCode}\``, { chat_id: chatId, message_id: countMsgId, parse_mode: 'Markdown', reply_markup: otpMarkup }).catch(()=>{});
                 
                 const maskedPhone = maskNumber(lastOrder.phone);
                 const groupBoxNumber = `╔════════════════════╗\n║ 📱 \`${maskedPhone}\`\n╚════════════════════╝`;
@@ -927,4 +952,4 @@ bot.on('callback_query', async (query) => {
 });
 
 loadApiKeys().then(() => console.log("🔑 API Keys loaded from MongoDB."));
-console.log("🚀 Premium Bulletproof Bot v9.7 (MK Network Security Bypass Fixed) is Alive!");
+console.log("🚀 Premium Bulletproof Bot v9.9 (MK Network Logic Updated) is Alive!");
