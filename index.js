@@ -1,7 +1,7 @@
 require('dotenv').config();
 const TelegramBot = require('node-telegram-bot-api');
 const axios = require('axios');
-const admin = require('firebase-admin');
+const mongoose = require('mongoose');
 const express = require('express');
 const { authenticator } = require('otplib');
 
@@ -9,27 +9,39 @@ const { authenticator } = require('otplib');
 process.on('unhandledRejection', (reason) => { console.error('Unhandled Rejection:', reason); });
 process.on('uncaughtException', (err) => { console.error('Uncaught Exception:', err.message); });
 
-// --- Express Server ---
+// --- Express Server (For Webhook & Keep-Alive) ---
 const app = express();
 const PORT = process.env.PORT || 3000;
-app.get('/', (req, res) => res.send('Premium Fire OTP Bot v9.3 is Running Perfectly!'));
+const SERVER_URL = process.env.SERVER_URL; // e.g., https://your-app-name.onrender.com
+
+app.use(express.json());
+app.get('/', (req, res) => res.send('Premium Fire OTP Bot v9.3 is Running Perfectly with MongoDB!'));
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 
-// --- Firebase Setup ---
-try {
-    let privateKey = process.env.FIREBASE_PRIVATE_KEY;
-    if (privateKey) privateKey = privateKey.replace(/\\n/g, '\n').replace(/^"|"$/g, '');
-    admin.initializeApp({
-        credential: admin.credential.cert({
-            projectId: process.env.FIREBASE_PROJECT_ID,
-            clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-            privateKey: privateKey,
-        })
-    });
-    console.log("✅ Firebase Connected Successfully!");
-} catch (error) { console.error("❌ Firebase Auth Error: ", error.message); }
+// --- MongoDB Setup ---
+const MONGO_URI = process.env.MONGO_URI || "mongodb+srv://mdwld2005_db_user:L8W7tzuYEkJgOuNr@firexotpbot.7hhtdlf.mongodb.net/?appName=FireXotpbot";
 
-const db = admin.firestore();
+mongoose.connect(MONGO_URI)
+  .then(() => console.log('✅ MongoDB Connected Successfully!'))
+  .catch(err => console.error('❌ MongoDB Connection Error:', err));
+
+// --- Mongoose Schemas ---
+const UserSchema = new mongoose.Schema({
+    id: String,
+    first_name: String,
+    username: String,
+    total_numbers: { type: Number, default: 0 },
+    total_otps: { type: Number, default: 0 },
+    joined: String,
+    two_fa: { type: Array, default: [] }
+});
+const User = mongoose.model('User', UserSchema);
+
+const SettingSchema = new mongoose.Schema({
+    key: { type: String, unique: true },
+    data: mongoose.Schema.Types.Mixed
+});
+const Setting = mongoose.model('Setting', SettingSchema);
 
 // --- কনফিগারেশন ---
 const BOT_TOKEN = process.env.BOT_TOKEN;
@@ -38,8 +50,21 @@ const OTP_GROUP_ID = "@otp_number_grp";
 const BASE_URL = 'http://63.141.255.227';
 const NUMBER_EXPIRY_MS = 30 * 60 * 1000; // 30 minutes
 
-const bot = new TelegramBot(BOT_TOKEN, { polling: true });
-bot.on('polling_error', (err) => console.log("Polling Error:", err.message));
+// --- Webhook vs Polling System (Anti-Hang for Render) ---
+let bot;
+if (SERVER_URL) {
+    bot = new TelegramBot(BOT_TOKEN);
+    bot.setWebHook(`${SERVER_URL}/bot${BOT_TOKEN}`);
+    app.post(`/bot${BOT_TOKEN}`, (req, res) => {
+        bot.processUpdate(req.body);
+        res.sendStatus(200);
+    });
+    console.log(`✅ Webhook set to ${SERVER_URL}`);
+} else {
+    bot = new TelegramBot(BOT_TOKEN, { polling: true });
+    bot.on('polling_error', (err) => console.log("Polling Error:", err.message));
+    console.log(`⚠️ SERVER_URL not found in .env, using Polling mode (Fallback).`);
+}
 
 let adminState = {};
 const userLastOrder = new Map();
@@ -47,32 +72,28 @@ const activePolls = new Map();
 const deliveredOtps = new Set();
 
 // --- গ্লোবাল API Keys ---
-let apiKeys = []; // dynamic list loaded from Firebase
+let apiKeys = [];
 
-// --- Helper to load API keys from Firebase ---
 async function loadApiKeys() {
     try {
-        const doc = await db.collection('bot_settings').doc('api_keys').get();
-        if (doc.exists && doc.data().keys && doc.data().keys.length > 0) {
-            apiKeys = doc.data().keys;
+        const doc = await Setting.findOne({ key: 'api_keys' });
+        if (doc && doc.data && doc.data.keys && doc.data.keys.length > 0) {
+            apiKeys = doc.data.keys;
         } else {
-            // fallback to env variable
             if (process.env.API_KEY) apiKeys = [process.env.API_KEY];
-            else apiKeys = [];
         }
     } catch (e) {
         if (process.env.API_KEY) apiKeys = [process.env.API_KEY];
     }
 }
 
-// Save keys to Firebase and update global array
 async function saveApiKeys(keys) {
-    await db.collection('bot_settings').doc('api_keys').set({ keys });
+    await Setting.findOneAndUpdate({ key: 'api_keys' }, { data: { keys } }, { upsert: true });
     apiKeys = keys;
 }
 
-// --- API call with key rotation ---
-async function apiRequest(method, url, data = null, timeout = 5000) {
+// --- API call with key rotation (Load Balancing) ---
+async function apiRequest(method, url, data = null, timeout = 10000) {
     let lastError = null;
     for (let key of apiKeys) {
         try {
@@ -83,104 +104,81 @@ async function apiRequest(method, url, data = null, timeout = 5000) {
             } else if (method === 'post') {
                 res = await axios.post(url, data, { headers, timeout });
             }
-            if (res.data && res.data.success !== false) return res; // success
-            // if success:false, try next key?
-            // we assume any HTTP response means key works but might be empty, we still return
+            if (res.data && res.data.success !== false) return res;
             return res;
         } catch (err) {
             lastError = err;
-            // continue to next key
         }
     }
     throw lastError || new Error('All API keys failed');
 }
 
-// --- Database functions (unchanged) ---
-function ensureUser(user) {
+// --- Database functions (MongoDB version) ---
+async function ensureUser(user) {
     if (!user || !user.id) return;
-    db.collection('users').doc(String(user.id)).get().then(doc => {
-        if (!doc.exists) {
-            db.collection('users').doc(String(user.id)).set({
-                first_name: user.first_name || 'User',
-                username: user.username || 'N/A',
-                total_numbers: 0,
-                total_otps: 0,
-                joined: new Date().toISOString()
-            }).catch(()=>{});
-        }
-    }).catch(()=>{});
+    try {
+        await User.findOneAndUpdate(
+            { id: String(user.id) },
+            { $setOnInsert: { first_name: user.first_name || 'User', username: user.username || 'N/A', joined: new Date().toISOString() } },
+            { upsert: true }
+        );
+    } catch(e) {}
 }
 
-async function getUserStats(userId) {
+async function updateUserStat(userId, type) {
     try {
-        const doc = await db.collection('users').doc(String(userId)).get();
-        if (doc.exists) return doc.data();
-        return { total_numbers: 0, total_otps: 0, joined: new Date().toISOString() };
-    } catch(e) { return { total_numbers: 0, total_otps: 0 }; }
-}
-
-function updateUserStat(userId, type) {
-    try {
-        const docRef = db.collection('users').doc(String(userId));
-        if (type === 'number') docRef.update({ total_numbers: admin.firestore.FieldValue.increment(1) }).catch(()=>{});
-        if (type === 'otp') docRef.update({ total_otps: admin.firestore.FieldValue.increment(1) }).catch(()=>{});
+        let update = {};
+        if (type === 'number') update = { $inc: { total_numbers: 1 } };
+        if (type === 'otp') update = { $inc: { total_otps: 1 } };
+        await User.findOneAndUpdate({ id: String(userId) }, update);
     } catch(e){}
 }
 
-function updateGlobalStats(type) {
+async function updateGlobalStats(type) {
     try {
-        const docRef = db.collection('bot_settings').doc('global_stats');
-        let updates = {};
-        if (type === 'pending') updates['pending'] = admin.firestore.FieldValue.increment(1);
-        if (type === 'success') {
-            updates['success'] = admin.firestore.FieldValue.increment(1);
-            updates['pending'] = admin.firestore.FieldValue.increment(-1);
-        }
-        if (type === 'failed') {
-            updates['failed'] = admin.firestore.FieldValue.increment(1);
-            updates['pending'] = admin.firestore.FieldValue.increment(-1);
-        }
-        docRef.set(updates, { merge: true }).catch(()=>{});
+        let update = {};
+        if (type === 'pending') update = { 'data.pending': 1 };
+        if (type === 'success') { update = { 'data.success': 1, 'data.pending': -1 }; }
+        if (type === 'failed') { update = { 'data.failed': 1, 'data.pending': -1 }; }
+        await Setting.findOneAndUpdate({ key: 'global_stats' }, { $inc: update }, { upsert: true });
     } catch(e){}
 }
 
 async function loadRanges() {
     try {
-        const doc = await db.collection('bot_settings').doc('platforms').get();
-        return doc.exists ? doc.data() : {};
+        const doc = await Setting.findOne({ key: 'platforms' });
+        return doc && doc.data ? doc.data : {};
     } catch(e){ return {}; }
 }
+
 async function saveRanges(data) {
-    try { await db.collection('bot_settings').doc('platforms').set(data); } catch(e){}
+    try { await Setting.findOneAndUpdate({ key: 'platforms' }, { data }, { upsert: true }); } catch(e){}
 }
 
-function updateTraffic(plat, country) {
+async function updateTraffic(plat, country) {
     try {
-        const docRef = db.collection('bot_settings').doc('traffic');
-        docRef.get().then(doc => {
-            let data = doc.exists ? doc.data() : {};
-            let key = `${getPlatIcon(plat)} ${plat.toUpperCase()} - ${country.split(' ')[0]}`;
-            data[key] = (data[key] || 0) + 1;
-            docRef.set(data).catch(()=>{});
-        }).catch(()=>{});
+        const trafficKey = `${getPlatIcon(plat)} ${plat.toUpperCase()} - ${country.split(' ')[0]}`;
+        const updateStr = `data.${trafficKey}`;
+        await Setting.findOneAndUpdate({ key: 'traffic' }, { $inc: { [updateStr]: 1 } }, { upsert: true });
     } catch(e){}
 }
 
 async function getTraffic() {
     try {
-        const doc = await db.collection('bot_settings').doc('traffic').get();
-        return doc.exists ? doc.data() : {};
+        const doc = await Setting.findOne({ key: 'traffic' });
+        return doc && doc.data ? doc.data : {};
     } catch(e){ return {}; }
 }
 
 async function get2FA(chatId) {
     try {
-        const doc = await db.collection('users').doc(String(chatId)).get();
-        return doc.exists ? (doc.data().two_fa || []) : [];
+        const u = await User.findOne({ id: String(chatId) });
+        return u && u.two_fa ? u.two_fa : [];
     } catch(e){ return []; }
 }
+
 async function save2FA(chatId, two_fa_list) {
-    try { await db.collection('users').doc(String(chatId)).set({ two_fa: two_fa_list }, { merge: true }); } catch(e){}
+    try { await User.findOneAndUpdate({ id: String(chatId) }, { two_fa: two_fa_list }); } catch(e){}
 }
 
 // --- Helpers ---
@@ -223,84 +221,10 @@ function getAdminMenu() {
     };
 }
 
-// --- OTP Polling (30 min expiry) ---
-function startOtpPolling(chatId, msgId, numId, phone, plat, country, createdAt, attempt = 0) {
-    if (!activePolls.has(numId) || deliveredOtps.has(numId)) return;
-
-    if (Date.now() - createdAt > NUMBER_EXPIRY_MS) {
-        activePolls.delete(numId);
-        updateGlobalStats('failed');
-        const formatPhone = phone.startsWith('+') ? phone : '+' + phone;
-        const boxNumber = `╔════════════════════╗\n║ 📱 \`${formatPhone}\`\n╚════════════════════╝`;
-        bot.editMessageText(`⚠️ *Number Expired!*\n\n🌍 *Country:* ${country}\n\n${boxNumber}\n\n_৩০ মিনিট পার হয়ে গেছে। Change Number এ ক্লিক করে নতুন নাম্বার নিন।_`, { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown' }).catch(()=>{});
-        return;
-    }
-
-    setTimeout(async () => {
-        if (!activePolls.has(numId) || deliveredOtps.has(numId)) return;
-
-        if (Date.now() - createdAt > NUMBER_EXPIRY_MS) {
-            activePolls.delete(numId);
-            updateGlobalStats('failed');
-            const formatPhone = phone.startsWith('+') ? phone : '+' + phone;
-            const boxNumber = `╔════════════════════╗\n║ 📱 \`${formatPhone}\`\n╚════════════════════╝`;
-            bot.editMessageText(`⚠️ *Number Expired!*\n\n🌍 *Country:* ${country}\n\n${boxNumber}\n\n_৩০ মিনিট পার হয়ে গেছে। Change Number এ ক্লিক করে নতুন নাম্বার নিন।_`, { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown' }).catch(()=>{});
-            return;
-        }
-
-        try {
-            const res = await apiRequest('get', `${BASE_URL}/api/v1/numbers/${numId}/sms`);
-
-            if (res.data.success && res.data.otp) {
-                if (deliveredOtps.has(numId)) return;
-                deliveredOtps.add(numId);
-                activePolls.delete(numId);
-
-                const otpCode = res.data.otp;
-                const formatPhone = phone.startsWith('+') ? phone : '+' + phone;
-                const boxNumber = `╔════════════════════╗\n║ 📱 \`${formatPhone}\`\n╚════════════════════╝`;
-                const platDisplay = `${getPlatIcon(plat)} ${plat.charAt(0).toUpperCase() + plat.slice(1)}`;
-
-                bot.editMessageText(`✅ *Number Generated!*\n\n📱 *Platform:* ${platDisplay}\n🌍 *Country:* ${country}\n\n${boxNumber}`, { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown' }).catch(()=>{});
-
-                const userMarkup = {
-                    inline_keyboard: [
-                        [{ text: `📋  ${otpCode}`, copy_text: { text: otpCode } }],
-                        [{ text: "💬 OTP Group", url: `https://t.me/${OTP_GROUP_ID.replace('@', '')}` }]
-                    ]
-                };
-                bot.sendMessage(chatId, `📱 *Platform:* ${platDisplay}\n🌍 *Country:* ${country}\n\n${boxNumber}`, { parse_mode: 'Markdown', reply_markup: userMarkup });
-
-                updateTraffic(plat, country);
-                updateUserStat(chatId, 'otp');
-                updateGlobalStats('success');
-
-                const maskedPhone = maskNumber(phone);
-                const groupBoxNumber = `╔════════════════════╗\n║ 📱 \`${maskedPhone}\`\n╚════════════════════╝`;
-                const groupMarkup = { inline_keyboard: [[{ text: `📋  ${otpCode}`, copy_text: { text: otpCode } }]] };
-                bot.sendMessage(OTP_GROUP_ID, `📱 *Platform:* ${platDisplay}\n🌍 *Country:* ${country}\n\n${groupBoxNumber}`, { parse_mode: 'Markdown', reply_markup: groupMarkup }).catch(()=>{});
-                return;
-            }
-        } catch (err) {}
-
-        if (attempt >= 900) {
-            activePolls.delete(numId);
-            updateGlobalStats('failed');
-            const formatPhone = phone.startsWith('+') ? phone : '+' + phone;
-            bot.editMessageText(`⚠️ *OTP Timeout!*\n\n🌍 *Country:* ${country}\n\n╔════════════════════╗\n║ 📱 \`${formatPhone}\`\n╚════════════════════╝\n\n_৩০ মিনিটের মধ্যে কোনো OTP আসেনি। Change Number এ ক্লিক করে নতুন নাম্বার নিন।_`, { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown' }).catch(()=>{});
-            return;
-        }
-
-        if (activePolls.has(numId)) {
-            startOtpPolling(chatId, msgId, numId, phone, plat, country, createdAt, attempt + 1);
-        }
-    }, 2000);
-}
-
-// --- Force Subscribe (including OTP Group) ---
+// --- Force Subscribe ---
 async function checkForceSub(chatId) {
     if (chatId === ADMIN_ID) return true;
-    const channels = ['@developer_walid', '@fireotp_method', OTP_GROUP_ID]; // OTP Group required
+    const channels = ['@developer_walid', '@fireotp_method', OTP_GROUP_ID];
     let isSubscribed = true;
     let buttons = [];
 
@@ -327,14 +251,14 @@ async function checkForceSub(chatId) {
 
 // --- Commands & Messages ---
 bot.onText(/\/start/, async (msg) => {
-    ensureUser(msg.from);
+    await ensureUser(msg.from);
     if (!(await checkForceSub(msg.chat.id))) return;
     const welcomeMsg = `🌟 *WELCOME TO PREMIUM FIRE OTP BOT* 🌟\n\n👋 Hello, *${msg.from.first_name}*!\n\n🚀 _Get unlimited virtual numbers and instant OTPs for any platform in seconds._\n\n👇 Please choose an option from the menu below:`;
     bot.sendMessage(msg.chat.id, welcomeMsg, { parse_mode: 'Markdown', ...getMainMenu(msg.chat.id) });
 });
 
 bot.on('message', async (msg) => {
-    ensureUser(msg.from);
+    await ensureUser(msg.from);
     const chatId = msg.chat.id;
     const text = msg.text;
     if (!text || text.startsWith('/')) return;
@@ -380,8 +304,8 @@ bot.on('message', async (msg) => {
             const platName = state.platform.charAt(0).toUpperCase() + state.platform.slice(1);
             const broadcastMsg = `📢 *NEW NUMBER STOCKED!*\n\n${icon} *Platform:* ${platName}\n🌍 *Country:* ${state.country}\n\n🔥 _Go to "GET NUMBER" and grab your numbers now!_`;
             try {
-                const users = await db.collection('users').get();
-                users.forEach(doc => bot.sendMessage(doc.id, broadcastMsg, { parse_mode: 'Markdown' }).catch(()=>{}));
+                const users = await User.find({});
+                users.forEach(u => bot.sendMessage(u.id, broadcastMsg, { parse_mode: 'Markdown' }).catch(()=>{}));
             } catch(e){}
             delete adminState[chatId]; return;
         }
@@ -400,17 +324,16 @@ bot.on('message', async (msg) => {
                 return;
             }
             try {
-                await db.collection('bot_settings').doc('notice').set({ text: noticeText, updatedAt: new Date().toISOString() });
+                await Setting.findOneAndUpdate({ key: 'notice' }, { data: { text: noticeText, updatedAt: new Date().toISOString() } }, { upsert: true });
                 bot.sendMessage(chatId, "✅ *Notice saved! Broadcasting...*", { parse_mode: 'Markdown' });
-                const usersSnap = await db.collection('users').get();
-                usersSnap.forEach(doc => {
-                    bot.sendMessage(doc.id, `📢 *Notice from Admin:*\n\n${noticeText}`, { parse_mode: 'Markdown' }).catch(()=>{});
+                const users = await User.find({});
+                users.forEach(u => {
+                    bot.sendMessage(u.id, `📢 *Notice from Admin:*\n\n${noticeText}`, { parse_mode: 'Markdown' }).catch(()=>{});
                 });
             } catch (e) { bot.sendMessage(chatId, "⚠️ *Failed to save notice.*", { parse_mode: 'Markdown' }); }
             delete adminState[chatId];
             return;
         }
-        // API key input
         else if (state.action === 'wait_apikey_add') {
             const newKey = text.trim();
             if (!newKey) {
@@ -419,9 +342,8 @@ bot.on('message', async (msg) => {
                 return;
             }
             try {
-                const docRef = db.collection('bot_settings').doc('api_keys');
-                const doc = await docRef.get();
-                let keys = doc.exists ? (doc.data().keys || []) : [];
+                let doc = await Setting.findOne({ key: 'api_keys' });
+                let keys = doc && doc.data && doc.data.keys ? doc.data.keys : [];
                 if (!keys.includes(newKey)) {
                     keys.push(newKey);
                     await saveApiKeys(keys);
@@ -536,15 +458,15 @@ bot.on('callback_query', async (query) => {
         }
         else if (data === "adm_dash" && chatId === ADMIN_ID) {
             try {
-                const usersSnap = await db.collection('users').get();
-                const statDoc = await db.collection('bot_settings').doc('global_stats').get();
-                const gStats = statDoc.exists ? statDoc.data() : { success: 0, pending: 0, failed: 0 };
+                const totalUsers = await User.countDocuments();
+                const statDoc = await Setting.findOne({ key: 'global_stats' });
+                const gStats = statDoc && statDoc.data ? statDoc.data : { success: 0, pending: 0, failed: 0 };
                 let apiBal = "Loading...";
                 try {
                     const balRes = await apiRequest('get', `${BASE_URL}/api/v1/balance`, null, 5000);
                     if(balRes.data.success) apiBal = balRes.data.balance + " ৳";
                 } catch(e){ apiBal = "Error"; }
-                const dashText = `📊 *BOT DASHBOARD*\n\n💰 *API Balance:* \`${apiBal}\`\n👥 *Total Users:* \`${usersSnap.size}\`\n\n📈 *Order Stats:*\n✅ Success: \`${gStats.success || 0}\`\n⏳ Pending: \`${gStats.pending || 0}\`\n❌ Failed: \`${gStats.failed || 0}\``;
+                const dashText = `📊 *BOT DASHBOARD*\n\n💰 *API Balance:* \`${apiBal}\`\n👥 *Total Users:* \`${totalUsers}\`\n\n📈 *Order Stats:*\n✅ Success: \`${gStats.success || 0}\`\n⏳ Pending: \`${gStats.pending || 0}\`\n❌ Failed: \`${gStats.failed || 0}\``;
                 bot.editMessageText(dashText, { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: "🔙 Back", callback_data: "admin_main" }]] }});
             } catch (e) {}
         }
@@ -621,9 +543,9 @@ bot.on('callback_query', async (query) => {
 
         // --- Broadcast & User List ---
         else if (data === "adm_broadcast" && chatId === ADMIN_ID) {
-            const doc = await db.collection('bot_settings').doc('notice').get();
+            const doc = await Setting.findOne({ key: 'notice' });
             let noticeText = "None";
-            if (doc.exists) noticeText = doc.data().text;
+            if (doc && doc.data) noticeText = doc.data.text;
             let markup = {
                 inline_keyboard: [
                     [{ text: "✏️ Add/Edit Notice", callback_data: "broadcast_edit" }, { text: "🗑️ Delete Notice", callback_data: "broadcast_delete" }],
@@ -638,17 +560,16 @@ bot.on('callback_query', async (query) => {
             bot.answerCallbackQuery(query.id);
         }
         else if (data === "broadcast_delete" && chatId === ADMIN_ID) {
-            await db.collection('bot_settings').doc('notice').delete().catch(()=>{});
+            await Setting.deleteOne({ key: 'notice' }).catch(()=>{});
             bot.editMessageText("✅ *Notice deleted.*", { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: "🔙 Back", callback_data: "admin_main" }]] } });
         }
         else if (data === "adm_userlist" && chatId === ADMIN_ID) {
             bot.answerCallbackQuery(query.id, { text: "⏳ Preparing user list..." });
             try {
-                const usersSnap = await db.collection('users').get();
+                const users = await User.find({});
                 let userList = "👥 *USER LIST* 👥\n\nID | Name | Username | Numbers | OTPs | Joined\n--------------------------------------------------\n";
-                usersSnap.forEach(doc => {
-                    const u = doc.data();
-                    userList += `${doc.id} | ${u.first_name || 'N/A'} | ${u.username || 'N/A'} | ${u.total_numbers || 0} | ${u.total_otps || 0} | ${u.joined ? new Date(u.joined).toLocaleDateString() : 'N/A'}\n`;
+                users.forEach(u => {
+                    userList += `${u.id} | ${u.first_name || 'N/A'} | ${u.username || 'N/A'} | ${u.total_numbers || 0} | ${u.total_otps || 0} | ${u.joined ? new Date(u.joined).toLocaleDateString() : 'N/A'}\n`;
                 });
                 const buffer = Buffer.from(userList, 'utf-8');
                 await bot.sendDocument(chatId, buffer, {}, { filename: 'users.txt', contentType: 'text/plain' });
@@ -657,8 +578,8 @@ bot.on('callback_query', async (query) => {
 
         // --- API Keys Management ---
         else if (data === "adm_apikeys" && chatId === ADMIN_ID) {
-            const doc = await db.collection('bot_settings').doc('api_keys').get();
-            let keys = doc.exists ? (doc.data().keys || []) : [];
+            const doc = await Setting.findOne({ key: 'api_keys' });
+            let keys = doc && doc.data && doc.data.keys ? doc.data.keys : [];
             if (keys.length === 0 && process.env.API_KEY) keys = [process.env.API_KEY];
             let msgText = "🔑 *API Keys:*\n";
             keys.forEach((key, idx) => {
@@ -680,8 +601,8 @@ bot.on('callback_query', async (query) => {
         }
         else if (data.startsWith('del_apikey_') && chatId === ADMIN_ID) {
             const index = parseInt(data.split('_')[2]);
-            const doc = await db.collection('bot_settings').doc('api_keys').get();
-            let keys = doc.exists ? (doc.data().keys || []) : [];
+            const doc = await Setting.findOne({ key: 'api_keys' });
+            let keys = doc && doc.data && doc.data.keys ? doc.data.keys : [];
             if (keys.length > index) {
                 keys.splice(index, 1);
                 await saveApiKeys(keys);
@@ -721,7 +642,6 @@ bot.on('callback_query', async (query) => {
         else if (data === "change_num") {
             const lastOrder = userLastOrder.get(chatId);
             if (lastOrder && activePolls.has(lastOrder.numId)) {
-                clearInterval(activePolls.get(lastOrder.numId));
                 activePolls.delete(lastOrder.numId);
                 updateGlobalStats('failed');
             }
@@ -753,6 +673,7 @@ bot.on('callback_query', async (query) => {
             const ranges = await loadRanges(); const rangeVal = ranges[plat][country];
             bot.deleteMessage(chatId, msgId);
             const sentMsg = await bot.sendMessage(chatId, "⏳ *Generating Number...*", { parse_mode: 'Markdown' });
+            
             try {
                 const res = await apiRequest('post', `${BASE_URL}/api/v1/numbers/get`, { range: rangeVal, format: "international" }, 15000);
                 if (res.data.success) {
@@ -763,11 +684,18 @@ bot.on('callback_query', async (query) => {
                     const formatPhone = res.data.number.startsWith('+') ? res.data.number : '+' + res.data.number;
                     const boxNumber = `╔════════════════════╗\n║ 📱 \`${formatPhone}\`\n╚════════════════════╝`;
                     const platDisplay = `${getPlatIcon(plat)} ${plat.charAt(0).toUpperCase() + plat.slice(1)}`;
-                    const text = `📱 *Platform:* ${platDisplay}\n🌍 *Country:* ${country}\n\n${boxNumber}\n\n⏳ _অটোমেটিক OTP চেক করা হচ্ছে..._`;
-                    const actionMarkup = { inline_keyboard: [[{ text: "🔄 Fetch OTP", callback_data: `fetch_otp_${res.data.number_id}` }, { text: "❌ Change Number", callback_data: "change_num" }]] };
+                    
+                    const text = `📱 *Platform:* ${platDisplay}\n🌍 *Country:* ${country}\n\n${boxNumber}\n\n👉 _নাম্বারটি অ্যাপে বসিয়ে Fetch OTP তে ক্লিক করুন_`;
+                    
+                    // Button Order Changed: Change Num on Left, Fetch on Right
+                    const actionMarkup = { 
+                        inline_keyboard: [[
+                            { text: "❌ Change Number", callback_data: "change_num" },
+                            { text: "🔄 Fetch OTP", callback_data: `fetch_otp_${res.data.number_id}` }
+                        ]] 
+                    };
                     bot.editMessageText(text, { chat_id: chatId, message_id: sentMsg.message_id, parse_mode: 'Markdown', reply_markup: actionMarkup });
                     activePolls.set(res.data.number_id, true);
-                    startOtpPolling(chatId, sentMsg.message_id, res.data.number_id, res.data.number, plat, country, createdAt);
                 } else {
                     bot.editMessageText("❌ *এই মুহূর্তে এই কান্ট্রির কোনো নাম্বার স্টকে নেই।*", { chat_id: chatId, message_id: sentMsg.message_id, parse_mode: 'Markdown' });
                 }
@@ -775,10 +703,11 @@ bot.on('callback_query', async (query) => {
             bot.answerCallbackQuery(query.id);
         }
 
-        // Fetch OTP button
+        // --- Fetch OTP Logic (With Loading Animation) ---
         else if (data.startsWith('fetch_otp_')) {
             const numId = data.split('fetch_otp_')[1];
             const lastOrder = userLastOrder.get(chatId);
+            
             if (!lastOrder || lastOrder.numId !== numId) {
                 bot.answerCallbackQuery(query.id, { text: "এই নাম্বারটি আর valid নয়।", show_alert: true });
                 return;
@@ -795,8 +724,20 @@ bot.on('callback_query', async (query) => {
                 bot.answerCallbackQuery(query.id, { text: "OTP ইতিমধ্যেই ডেলিভার হয়েছে!", show_alert: true });
                 return;
             }
+
+            // 1. Show Loading Animation First
+            const formatPhone = lastOrder.phone.startsWith('+') ? lastOrder.phone : '+' + lastOrder.phone;
+            const boxNumber = `╔════════════════════╗\n║ 📱 \`${formatPhone}\`\n╚════════════════════╝`;
+            const platDisplay = `${getPlatIcon(lastOrder.plat)} ${lastOrder.plat.charAt(0).toUpperCase() + lastOrder.plat.slice(1)}`;
+            
+            bot.editMessageText(`📱 *Platform:* ${platDisplay}\n🌍 *Country:* ${lastOrder.country}\n\n${boxNumber}\n\n⏳ _Checking for OTP Code... Please wait_`, { 
+                chat_id: chatId, message_id: msgId, parse_mode: 'Markdown' 
+            }).catch(()=>{});
+
+            // 2. Fetch from API
             try {
                 const res = await apiRequest('get', `${BASE_URL}/api/v1/numbers/${numId}/sms`, null, 5000);
+                
                 if (res.data.success && res.data.otp) {
                     const otpCode = res.data.otp;
                     deliveredOtps.add(numId);
@@ -804,25 +745,35 @@ bot.on('callback_query', async (query) => {
                     updateTraffic(lastOrder.plat, lastOrder.country);
                     updateUserStat(chatId, 'otp');
                     updateGlobalStats('success');
-                    const formatPhone = lastOrder.phone.startsWith('+') ? lastOrder.phone : '+' + lastOrder.phone;
-                    const boxNumber = `╔════════════════════╗\n║ 📱 \`${formatPhone}\`\n╚════════════════════╝`;
-                    const platDisplay = `${getPlatIcon(lastOrder.plat)} ${lastOrder.plat.charAt(0).toUpperCase() + lastOrder.plat.slice(1)}`;
+                    
                     const otpMarkup = { inline_keyboard: [[{ text: `📋  ${otpCode}`, copy_text: { text: otpCode } }]] };
+                    
+                    // 3a. Success Message
                     bot.editMessageText(`✅ *OTP Received!*\n\n📱 *Platform:* ${platDisplay}\n🌍 *Country:* ${lastOrder.country}\n\n${boxNumber}`, { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown', reply_markup: otpMarkup });
-                    // Also send to OTP group
+                    
                     const maskedPhone = maskNumber(lastOrder.phone);
                     const groupBoxNumber = `╔════════════════════╗\n║ 📱 \`${maskedPhone}\`\n╚════════════════════╝`;
                     const groupMarkup = { inline_keyboard: [[{ text: `📋  ${otpCode}`, copy_text: { text: otpCode } }]] };
                     bot.sendMessage(OTP_GROUP_ID, `📱 *Platform:* ${platDisplay}\n🌍 *Country:* ${lastOrder.country}\n\n${groupBoxNumber}`, { parse_mode: 'Markdown', reply_markup: groupMarkup }).catch(()=>{});
+                
                 } else {
-                    const formatPhone = lastOrder.phone.startsWith('+') ? lastOrder.phone : '+' + lastOrder.phone;
-                    const boxNumber = `╔════════════════════╗\n║ 📱 \`${formatPhone}\`\n╚════════════════════╝`;
-                    const platDisplay = `${getPlatIcon(lastOrder.plat)} ${lastOrder.plat.charAt(0).toUpperCase() + lastOrder.plat.slice(1)}`;
-                    const actionMarkup = { inline_keyboard: [[{ text: "🔄 Fetch OTP", callback_data: `fetch_otp_${numId}` }, { text: "❌ Change Number", callback_data: "change_num" }]] };
-                    bot.editMessageText(`📱 *Platform:* ${platDisplay}\n🌍 *Country:* ${lastOrder.country}\n\n${boxNumber}\n\n⚠️ *OTP Not Found! Try Again Later.*`, { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown', reply_markup: actionMarkup });
+                    // 3b. Code Not Found Message (Restoring buttons)
+                    const actionMarkup = { 
+                        inline_keyboard: [[
+                            { text: "❌ Change Number", callback_data: "change_num" },
+                            { text: "🔄 Fetch OTP", callback_data: `fetch_otp_${numId}` }
+                        ]] 
+                    };
+                    bot.editMessageText(`📱 *Platform:* ${platDisplay}\n🌍 *Country:* ${lastOrder.country}\n\n${boxNumber}\n\n⚠️ *Code Not Found! Try Again.*`, { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown', reply_markup: actionMarkup });
                 }
             } catch (e) {
-                bot.answerCallbackQuery(query.id, { text: "সার্ভার রেসপন্স করছে না।", show_alert: true });
+                const actionMarkup = { 
+                    inline_keyboard: [[
+                        { text: "❌ Change Number", callback_data: "change_num" },
+                        { text: "🔄 Fetch OTP", callback_data: `fetch_otp_${numId}` }
+                    ]] 
+                };
+                bot.editMessageText(`📱 *Platform:* ${platDisplay}\n🌍 *Country:* ${lastOrder.country}\n\n${boxNumber}\n\n⚠️ *Server Timeout! Try Again.*`, { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown', reply_markup: actionMarkup });
             }
             bot.answerCallbackQuery(query.id);
         }
@@ -831,7 +782,7 @@ bot.on('callback_query', async (query) => {
 
 // Start loading API keys
 loadApiKeys().then(() => {
-    console.log("🔑 API Keys loaded.");
+    console.log("🔑 API Keys loaded from MongoDB.");
 });
 
-console.log("🚀 Premium Bulletproof Bot v9.3 is Alive! (Multi-API, Force OTP Group, Platform Name)");
+console.log("🚀 Premium Bulletproof Bot v9.3 (Mongoose + Webhook) is Alive!");
