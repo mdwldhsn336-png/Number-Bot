@@ -15,7 +15,7 @@ const PORT = process.env.PORT || 3000;
 const SERVER_URL = process.env.SERVER_URL; 
 
 app.use(express.json());
-app.get('/', (req, res) => res.send('Premium Fire OTP Bot v9.9 (MK Network Logic Updated) is Running!'));
+app.get('/', (req, res) => res.send('Premium Fire OTP Bot v10.0 (MK Network Final SMS Logic Fixed) is Running!'));
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 
 // --- MongoDB Setup ---
@@ -435,27 +435,36 @@ bot.on('message', async (msg) => {
                         otpFound = true; finalOtp = res.data.otp;
                     }
                 } else if (lastOrder.panel === 'mk') {
-                    // 1. Sync Request
                     await mkRequest('check_otp').catch(()=>{});
-                    // 2. Fetch history status
                     const dateFilter = getMkDate();
                     const hist = await mkRequest('get_history', { filter: 'all', page: 1, limit: 15, date: dateFilter });
                     
                     if (hist && Array.isArray(hist.data)) {
-                        // ফন নাম্বারের শেষ ৪-৫ ডিজিট দিয়ে ম্যাচ করাবো 
+                        // নাম্বারের শেষ ৬ ডিজিট দিয়ে অনেক বেশি ফ্লেক্সিবল সার্চ
                         const phoneDigits = lastOrder.phone.replace(/\D/g,'').slice(-6); 
-                        const matched = hist.data.find(o => o.phone_number && o.phone_number.replace(/\D/g,'').includes(phoneDigits));
+                        const matched = hist.data.find(o => {
+                            const p = String(o.phone_number || o.number || o.phone || '');
+                            return p.replace(/\D/g,'').includes(phoneDigits) || String(o.id) === String(lastOrder.numId);
+                        });
                         
-                        // matched.sms বা matched.full_sms থাকতে পারে, সেফটির জন্য || দিয়ে চেক করা হলো
-                        const smsData = matched ? (matched.full_sms || matched.sms || matched.message) : null;
-                        
-                        if (matched && matched.status === 'success' && smsData) {
-                            otpFound = true;
-                            const fullSms = smsData; // পুরো মেসেজটি এখান থেকে আসবে
+                        if (matched) {
+                            // সব সম্ভাব্য ফিল্ড একসাথে জোড়া দেওয়া হলো, যাতে কোনো মেসেজ মিস না হয়
+                            const rawText = `${matched.full_sms || ''} ${matched.sms || ''} ${matched.message || ''} ${matched.otps || ''}`;
                             
-                            // Regex ব্যবহার করে OTP বের করার লজিক 
-                            const otpMatch = fullSms.match(/(\d{4,6})/); 
-                            finalOtp = otpMatch ? otpMatch[0] : "Code Not Found";
+                            if (rawText.trim().length > 0) {
+                                // স্পেস যুক্ত নাম্বারগুলো ফিক্স করা (যেমন: 790 826 -> 790826)
+                                const cleanText = rawText.replace(/(\d)\s+(?=\d)/g, '$1'); 
+                                const otpMatch = cleanText.match(/\b\d{4,8}\b/);
+                                
+                                if (otpMatch) {
+                                    otpFound = true;
+                                    finalOtp = otpMatch[0];
+                                } else if (rawText.replace(/your|N\/A/gi, '').trim().length > 0) {
+                                    // যদি Regex এ না পায়, কিন্তু মেসেজ থাকে
+                                    otpFound = true;
+                                    finalOtp = rawText.replace(/your|N\/A/gi, '').trim();
+                                }
+                            }
                         }
                     }
                 }
@@ -807,7 +816,10 @@ bot.on('callback_query', async (query) => {
                         const hist = await mkRequest('get_history', { filter: 'all', page: 1, limit: 15, date: dateFilter });
                         if (hist && Array.isArray(hist.data)) {
                             const phoneDigits = finalPhone.replace(/\D/g,'');
-                            const matched = hist.data.find(o => o.phone_number && o.phone_number.replace(/\D/g,'').includes(phoneDigits));
+                            const matched = hist.data.find(o => {
+                                const p = String(o.phone_number || o.number || o.phone || '');
+                                return p.replace(/\D/g,'').includes(phoneDigits);
+                            });
                             if (matched) numId = matched.id;
                         }
                         if (!numId) numId = finalPhone; 
@@ -892,20 +904,29 @@ bot.on('callback_query', async (query) => {
                             const hist = await mkRequest('get_history', { filter: 'all', page: 1, limit: 15, date: dateFilter });
                             
                             if (hist && Array.isArray(hist.data)) {
-                                // ফন নাম্বারের শেষ ৪-৫ ডিজিট দিয়ে ম্যাচ করাবো 
                                 const phoneDigits = lastOrder.phone.replace(/\D/g,'').slice(-6); 
-                                const matched = hist.data.find(o => o.phone_number && o.phone_number.replace(/\D/g,'').includes(phoneDigits));
                                 
-                                // matched.sms বা matched.full_sms থাকতে পারে, সেফটির জন্য || দিয়ে চেক করা হলো
-                                const smsData = matched ? (matched.full_sms || matched.sms || matched.message) : null;
+                                const matched = hist.data.find(o => {
+                                    const p = String(o.phone_number || o.number || o.phone || '');
+                                    return p.replace(/\D/g,'').includes(phoneDigits) || String(o.id) === String(numId);
+                                });
                                 
-                                if (matched && matched.status === 'success' && smsData) {
-                                    otpFound = true;
-                                    const fullSms = smsData; // পুরো মেসেজটি এখান থেকে আসবে
+                                if (matched) {
+                                    // সব ফিল্ড এক করে দেওয়া হলো, যাতে কোনো মেসেজ মিস না যায়
+                                    const rawText = `${matched.full_sms || ''} ${matched.sms || ''} ${matched.message || ''} ${matched.otps || ''}`;
                                     
-                                    // Regex ব্যবহার করে OTP বের করার লজিক 
-                                    const otpMatch = fullSms.match(/(\d{4,6})/); 
-                                    otpCode = otpMatch ? otpMatch[0] : "Code Not Found";
+                                    if (rawText.trim().length > 0) {
+                                        const cleanText = rawText.replace(/(\d)\s+(?=\d)/g, '$1'); 
+                                        const otpMatch = cleanText.match(/\b\d{4,8}\b/);
+                                        
+                                        if (otpMatch) {
+                                            otpFound = true;
+                                            otpCode = otpMatch[0];
+                                        } else if (rawText.replace(/your|N\/A/gi, '').trim().length > 0) {
+                                            otpFound = true;
+                                            otpCode = rawText.replace(/your|N\/A/gi, '').trim();
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -952,4 +973,4 @@ bot.on('callback_query', async (query) => {
 });
 
 loadApiKeys().then(() => console.log("🔑 API Keys loaded from MongoDB."));
-console.log("🚀 Premium Bulletproof Bot v9.9 (MK Network Logic Updated) is Alive!");
+console.log("🚀 Premium Bulletproof Bot v10.0 (MK Network Final SMS Logic Fixed) is Alive!");
