@@ -15,7 +15,7 @@ const PORT = process.env.PORT || 3000;
 const SERVER_URL = process.env.SERVER_URL; 
 
 app.use(express.json());
-app.get('/', (req, res) => res.send('Premium Fire OTP Bot v9.3 is Running Perfectly with MongoDB!'));
+app.get('/', (req, res) => res.send('Premium Fire OTP Bot v9.5 is Running Perfectly with MongoDB!'));
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 
 // --- MongoDB Setup ---
@@ -92,10 +92,14 @@ async function saveApiKeys(keys) {
     apiKeys = keys;
 }
 
-// --- API call with key rotation ---
-async function apiRequest(method, url, data = null, timeout = 10000) {
+// --- API call with key rotation & Fallback ---
+async function apiRequest(method, url, data = null, timeout = 8000) {
+    // ডাটাবেস থেকে API না পেলে সরাসরি .env থেকে নেওয়ার ট্রাই করবে (যাতে নাম্বার দেওয়া মিস না হয়)
+    let keysToTry = apiKeys.length > 0 ? apiKeys : (process.env.API_KEY ? [process.env.API_KEY] : []);
+    if (keysToTry.length === 0) throw new Error("No API Key found");
+
     let lastError = null;
-    for (let key of apiKeys) {
+    for (let key of keysToTry) {
         try {
             const headers = { 'X-API-Key': key };
             let res;
@@ -680,10 +684,11 @@ bot.on('callback_query', async (query) => {
             const sentMsg = await bot.sendMessage(chatId, "⏳ *Generating Number...*", { parse_mode: 'Markdown' });
             
             try {
-                const res = await apiRequest('post', `${BASE_URL}/api/v1/numbers/get`, { range: rangeVal, format: "international" }, 15000);
+                // API কল টাইমআউট কমিয়ে দিয়েছি যাতে বট ফ্রিজ না হয়ে যায়
+                const res = await apiRequest('post', `${BASE_URL}/api/v1/numbers/get`, { range: rangeVal, format: "international" }, 12000);
                 if (res.data.success) {
                     const createdAt = Date.now();
-                    // মূল মেসেজের ID টা সেভ করে রাখছি, যেন পরে ওটাতে OTP বসানো যায়
+                    // মূল মেসেজের ID সেভ করা হলো
                     userLastOrder.set(chatId, { numId: res.data.number_id, phone: res.data.number, plat, country, createdAt, msgId: sentMsg.message_id });
                     updateUserStat(chatId, 'number');
                     updateGlobalStats('pending');
@@ -692,6 +697,7 @@ bot.on('callback_query', async (query) => {
                     const boxNumber = `╔════════════════════╗\n║ 📱 \`${formatPhone}\`\n╚════════════════════╝`;
                     const platDisplay = `${getPlatIcon(plat)} ${plat.charAt(0).toUpperCase() + plat.slice(1)}`;
                     
+                    // মূল মেসেজ সম্পূর্ণ অক্ষত
                     const text = `📱 *Platform:* ${platDisplay}\n🌍 *Country:* ${country}\n\n${boxNumber}`;
                     
                     const actionMarkup = { 
@@ -705,11 +711,13 @@ bot.on('callback_query', async (query) => {
                 } else {
                     bot.editMessageText("❌ *এই মুহূর্তে এই কান্ট্রির কোনো নাম্বার স্টকে নেই।*", { chat_id: chatId, message_id: sentMsg.message_id, parse_mode: 'Markdown' });
                 }
-            } catch (error) { bot.editMessageText("⚠️ *API সার্ভার রেসপন্স করছে না।*", { chat_id: chatId, message_id: sentMsg.message_id, parse_mode: 'Markdown' }); }
+            } catch (error) { 
+                bot.editMessageText("⚠️ *API সার্ভার রেসপন্স করছে না।*", { chat_id: chatId, message_id: sentMsg.message_id, parse_mode: 'Markdown' }); 
+            }
             bot.answerCallbackQuery(query.id);
         }
 
-        // --- Fetch OTP Logic (Separate Countdown Message) ---
+        // --- Fetch OTP Logic (Separate LIVE 10 to 1 Countdown Message) ---
         else if (data.startsWith('fetch_otp_')) {
             const numId = data.split('fetch_otp_')[1];
             const lastOrder = userLastOrder.get(chatId);
@@ -731,37 +739,38 @@ bot.on('callback_query', async (query) => {
                 return;
             }
 
-            // যদি মেইন মেসেজ থেকে ক্লিক করে, তাহলে নতুন মেসেজ পাঠাব। 
-            // আর যদি Try Again থেকে ক্লিক করে, তাহলে ওই মেসেজটাই এডিট করব।
+            bot.answerCallbackQuery(query.id);
+
+            // মেইন মেসেজ থেকে ক্লিক করলে নতুন মেসেজ পাঠাবো, Try Again থেকে ক্লিক করলে আগের মেসেজটাই এডিট করবো
             let countMsgId;
             if (msgId === lastOrder.msgId) {
-                const countMsg = await bot.sendMessage(chatId, `⏳ *Checking OTP:* 10s...`, { parse_mode: 'Markdown' });
+                const countMsg = await bot.sendMessage(chatId, `⏳ *Checking OTP:* 10...`, { parse_mode: 'Markdown' });
                 countMsgId = countMsg.message_id;
             } else {
                 countMsgId = msgId;
-                await bot.editMessageText(`⏳ *Checking OTP:* 10s...`, { chat_id: chatId, message_id: countMsgId, parse_mode: 'Markdown' }).catch(()=>{});
             }
 
             let otpFound = false;
             let otpCode = '';
             
-            // ১০ সেকেন্ড লুপ (৫ বার API চেক করবে ২ সেকেন্ড পর পর)
-            for (let i = 10; i > 0; i -= 2) {
-                if (i < 10) {
-                    await bot.editMessageText(`⏳ *Checking OTP:* ${i}s...`, { chat_id: chatId, message_id: countMsgId, parse_mode: 'Markdown' }).catch(()=>{});
+            // লাইভ কাউন্টডাউন: 10, 9, 8, 7... 1
+            for (let i = 10; i >= 1; i--) {
+                await bot.editMessageText(`⏳ *Checking OTP:* ${i}...`, { chat_id: chatId, message_id: countMsgId, parse_mode: 'Markdown' }).catch(()=>{});
+                
+                // প্যানেল যেন ব্যান না করে তাই ২ সেকেন্ড পর পর API তে নক দেব (10, 8, 6, 4, 2)
+                if (i % 2 === 0) {
+                    try {
+                        const res = await apiRequest('get', `${BASE_URL}/api/v1/numbers/${numId}/sms`, null, 5000);
+                        if (res.data.success && res.data.otp) {
+                            otpFound = true;
+                            otpCode = res.data.otp;
+                            break;
+                        }
+                    } catch (e) {}
                 }
                 
-                try {
-                    const res = await apiRequest('get', `${BASE_URL}/api/v1/numbers/${numId}/sms`, null, 5000);
-                    if (res.data.success && res.data.otp) {
-                        otpFound = true;
-                        otpCode = res.data.otp;
-                        break;
-                    }
-                } catch (e) {}
-                
-                if (!otpFound && i > 2) {
-                    await new Promise(resolve => setTimeout(resolve, 2000));
+                if (!otpFound) {
+                    await new Promise(resolve => setTimeout(resolve, 1000)); // ১ সেকেন্ড ওয়েট
                 }
             }
 
@@ -772,22 +781,22 @@ bot.on('callback_query', async (query) => {
                 updateUserStat(chatId, 'otp');
                 updateGlobalStats('success');
                 
-                // কাউন্টডাউন মেসেজ ডিলিট করে দেব
-                bot.deleteMessage(chatId, countMsgId).catch(()=>{});
-                
-                // অরিজিনাল মেসেজ আপডেট করে কোড বসাবো
-                const formatPhone = lastOrder.phone.startsWith('+') ? lastOrder.phone : '+' + lastOrder.phone;
-                const boxNumber = `╔════════════════════╗\n║ 📱 \`${formatPhone}\`\n╚════════════════════╝`;
                 const platDisplay = `${getPlatIcon(lastOrder.plat)} ${lastOrder.plat.charAt(0).toUpperCase() + lastOrder.plat.slice(1)}`;
                 
-                // OTP এবং OTP Group বাটন
+                // কংগ্রাচুলেশন মেসেজ এবং OTP গ্রুপ বাটন (আলাদা মেসেজে)
                 const otpMarkup = { 
                     inline_keyboard: [
-                        [{ text: `📋  ${otpCode}`, copy_text: { text: otpCode } }],
+                        [{ text: `📋 Copy Code: ${otpCode}`, copy_text: { text: otpCode } }],
                         [{ text: "💬 OTP Group", url: `https://t.me/${OTP_GROUP_ID.replace('@', '')}` }]
                     ] 
                 };
-                bot.editMessageText(`✅ *OTP Received!*\n\n📱 *Platform:* ${platDisplay}\n🌍 *Country:* ${lastOrder.country}\n\n${boxNumber}`, { chat_id: chatId, message_id: lastOrder.msgId, parse_mode: 'Markdown', reply_markup: otpMarkup }).catch(()=>{});
+                
+                await bot.editMessageText(`🎉 *Congratulations! Boss*\n\n✅ *OTP Code:* \`${otpCode}\``, { 
+                    chat_id: chatId, 
+                    message_id: countMsgId, 
+                    parse_mode: 'Markdown', 
+                    reply_markup: otpMarkup 
+                }).catch(()=>{});
                 
                 // OTP গ্রুপে পাঠানো
                 const maskedPhone = maskNumber(lastOrder.phone);
@@ -796,15 +805,14 @@ bot.on('callback_query', async (query) => {
                 bot.sendMessage(OTP_GROUP_ID, `📱 *Platform:* ${platDisplay}\n🌍 *Country:* ${lastOrder.country}\n\n${groupBoxNumber}`, { parse_mode: 'Markdown', reply_markup: groupMarkup }).catch(()=>{});
             
             } else {
-                // ১০ সেকেন্ডেও না পেলে কাউন্টডাউন মেসেজটিকে "Try Again" এ বদলে দেব
+                // কোড না পেলে Try Again বাটন (আলাদা মেসেজে)
                 const actionMarkup = { 
                     inline_keyboard: [[
                         { text: "🔄 Try Again", callback_data: `fetch_otp_${numId}` }
                     ]] 
                 };
-                bot.editMessageText(`⚠️ *Code Not Found!*`, { chat_id: chatId, message_id: countMsgId, parse_mode: 'Markdown', reply_markup: actionMarkup }).catch(()=>{});
+                await bot.editMessageText(`⚠️ *OTP Not Found!*`, { chat_id: chatId, message_id: countMsgId, parse_mode: 'Markdown', reply_markup: actionMarkup }).catch(()=>{});
             }
-            bot.answerCallbackQuery(query.id);
         }
     } catch(e) { bot.answerCallbackQuery(query.id, { text: "⚠️ Temporary Error!", show_alert: true }); }
 });
@@ -814,4 +822,4 @@ loadApiKeys().then(() => {
     console.log("🔑 API Keys loaded from MongoDB.");
 });
 
-console.log("🚀 Premium Bulletproof Bot v9.3 (Mongoose + Webhook + Active Countdown) is Alive!");
+console.log("🚀 Premium Bulletproof Bot v9.5 (Active 10s Countdown UI) is Alive!");
