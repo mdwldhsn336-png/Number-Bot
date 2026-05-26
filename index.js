@@ -15,7 +15,7 @@ const PORT = process.env.PORT || 3000;
 const SERVER_URL = process.env.SERVER_URL; 
 
 app.use(express.json());
-app.get('/', (req, res) => res.send('Premium Fire OTP Bot v9.6 (Multi-Panel Support) is Running!'));
+app.get('/', (req, res) => res.send('Premium Fire OTP Bot v9.7 (MK Network Fixed) is Running!'));
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 
 // --- MongoDB Setup ---
@@ -72,18 +72,27 @@ const activePolls = new Map();
 const deliveredOtps = new Set();
 
 // ==========================================
-// 🌐 MK NETWORK V3 SETUP (Cookie Management)
+// 🌐 MK NETWORK V3 SETUP (Fixed Security Headers)
 // ==========================================
-// আপনার দেওয়া লাইভ কুকিজ
 const MK_COOKIES = process.env.MK_COOKIES || "PHPSESSID=ci4itr3sbltg20bpmst0tksv52; mk_remember=21dd02e264eeba74886d9d23%3Aab042c38088fb96c7dea474770d54308d976eab68aa391a16f48ba7198cec0c6";
 const MK_API_URL = "https://mknetworkbd.com/API/api_handler_test.php";
 
-// MK Network এর জন্য কাস্টম রিকোয়েস্ট ফাংশন
+// আজকের লোকাল ডেট বের করার ফাংশন (হিস্ট্রি চেকের জন্য)
+function getMkDate() {
+    let today = new Date();
+    let offset = today.getTimezoneOffset() * 60000;
+    return (new Date(today - offset)).toISOString().split('T')[0];
+}
+
 async function mkRequest(action, extraParams = {}) {
     const headers = {
         'Cookie': MK_COOKIES,
         'Content-Type': 'application/x-www-form-urlencoded',
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'application/json, text/plain, */*',
+        'X-Requested-With': 'XMLHttpRequest', // ব্রাউজার বাইপাস
+        'Origin': 'https://mknetworkbd.com',
+        'Referer': 'https://mknetworkbd.com/getnum_test.php'
     };
     
     try {
@@ -108,7 +117,7 @@ async function mkRequest(action, extraParams = {}) {
 }
 
 // ==========================================
-// 🔥 NEXA API (63.141.x.x) SETUP
+// 🔥 NEXA API SETUP
 // ==========================================
 let apiKeys = [];
 
@@ -329,7 +338,6 @@ bot.on('message', async (msg) => {
             delete adminState[chatId]; return;
         }
         
-        // 📌 Admin Range Add Flow Update
         else if (state.action === 'wait_country_name') {
             state.country = text;
             const markup = {
@@ -428,9 +436,11 @@ bot.on('message', async (msg) => {
                     }
                 } else if (lastOrder.panel === 'mk') {
                     await mkRequest('check_otp').catch(()=>{});
-                    const hist = await mkRequest('get_history', { filter: 'all', page: 1, limit: 15 });
-                    if (hist && hist.data) {
-                        const matched = hist.data.find(o => o.id == lastOrder.numId);
+                    const dateFilter = getMkDate();
+                    const hist = await mkRequest('get_history', { filter: 'all', page: 1, limit: 15, date: dateFilter });
+                    if (hist && Array.isArray(hist.data)) {
+                        const phoneDigits = lastOrder.phone.replace(/\D/g,'');
+                        const matched = hist.data.find(o => o.phone_number && o.phone_number.replace(/\D/g,'').includes(phoneDigits));
                         if (matched && matched.status === 'success' && matched.otps) {
                             otpFound = true; finalOtp = matched.otps.split('|||')[0];
                         }
@@ -762,6 +772,7 @@ bot.on('callback_query', async (query) => {
                 let success = false;
                 let numId = null;
                 let finalPhone = null;
+                let apiErrorMsg = "❌ *এই মুহূর্তে এই কান্ট্রির কোনো নাম্বার স্টকে নেই।*";
                 
                 // 🔀 Multi-Panel Routing Logic
                 if (panel === 'nexa') {
@@ -772,21 +783,24 @@ bot.on('callback_query', async (query) => {
                         finalPhone = res.data.number;
                     }
                 } else if (panel === 'mk') {
-                    // MK API Call with Cookie
+                    // MK API Call with Hidden Security Headers
                     const resData = await mkRequest('get_number', { range: rangeVal });
                     if (resData && resData.status === 'success') {
                         success = true;
                         finalPhone = resData.number;
                         
-                        // MK Network doesn't return ID immediately, fetching from history
-                        const hist = await mkRequest('get_history', { filter: 'all', page: 1, limit: 15 });
-                        if (hist && hist.data) {
-                            // Removing non-numeric chars to match safely
+                        // Fetching ID from History using Auto-Date
+                        const dateFilter = getMkDate();
+                        const hist = await mkRequest('get_history', { filter: 'all', page: 1, limit: 15, date: dateFilter });
+                        if (hist && Array.isArray(hist.data)) {
                             const phoneDigits = finalPhone.replace(/\D/g,'');
                             const matched = hist.data.find(o => o.phone_number && o.phone_number.replace(/\D/g,'').includes(phoneDigits));
                             if (matched) numId = matched.id;
                         }
-                        if (!numId) numId = finalPhone; // Fallback 
+                        if (!numId) numId = finalPhone; 
+                    } else if (resData && resData.message) {
+                        // যদি MK থেকে ব্যালেন্স বা অন্য কোনো এরর আসে, সেটা দেখাবে
+                        apiErrorMsg = `⚠️ *MK Server:* ${resData.message}`;
                     }
                 }
 
@@ -811,7 +825,7 @@ bot.on('callback_query', async (query) => {
                     bot.editMessageText(text, { chat_id: chatId, message_id: sentMsg.message_id, parse_mode: 'Markdown', reply_markup: actionMarkup });
                     activePolls.set(numId, true);
                 } else {
-                    bot.editMessageText("❌ *এই মুহূর্তে এই কান্ট্রির কোনো নাম্বার স্টকে নেই।*", { chat_id: chatId, message_id: sentMsg.message_id, parse_mode: 'Markdown' });
+                    bot.editMessageText(apiErrorMsg, { chat_id: chatId, message_id: sentMsg.message_id, parse_mode: 'Markdown' });
                 }
             } catch (error) { 
                 bot.editMessageText("⚠️ *API সার্ভার রেসপন্স করছে না।*", { chat_id: chatId, message_id: sentMsg.message_id, parse_mode: 'Markdown' }); 
@@ -860,10 +874,13 @@ bot.on('callback_query', async (query) => {
                         } else if (panel === 'mk') {
                             // 1. Sync Request
                             await mkRequest('check_otp').catch(()=>{});
-                            // 2. Fetch history status
-                            const hist = await mkRequest('get_history', { filter: 'all', page: 1, limit: 15 });
-                            if (hist && hist.data) {
-                                const matched = hist.data.find(o => String(o.id) === String(numId) || o.phone_number.includes(lastOrder.phone.replace('+','')));
+                            // 2. Fetch history status with required Date
+                            const dateFilter = getMkDate();
+                            const hist = await mkRequest('get_history', { filter: 'all', page: 1, limit: 15, date: dateFilter });
+                            
+                            if (hist && Array.isArray(hist.data)) {
+                                const phoneDigits = lastOrder.phone.replace(/\D/g,'');
+                                const matched = hist.data.find(o => String(o.id) === String(numId) || (o.phone_number && o.phone_number.replace(/\D/g,'').includes(phoneDigits)));
                                 if (matched && matched.status === 'success' && matched.otps) {
                                     otpFound = true;
                                     otpCode = matched.otps.split('|||')[0];
@@ -910,4 +927,4 @@ bot.on('callback_query', async (query) => {
 });
 
 loadApiKeys().then(() => console.log("🔑 API Keys loaded from MongoDB."));
-console.log("🚀 Premium Bulletproof Bot v9.6 (Seamless Multi-Panel Support) is Alive!");
+console.log("🚀 Premium Bulletproof Bot v9.7 (MK Network Security Bypass Fixed) is Alive!");
