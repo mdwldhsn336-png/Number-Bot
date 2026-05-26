@@ -15,7 +15,7 @@ const PORT = process.env.PORT || 3000;
 const SERVER_URL = process.env.SERVER_URL; 
 
 app.use(express.json());
-app.get('/', (req, res) => res.send('Premium Fire OTP Bot v9.8 (Final MK Network Fix) is Running!'));
+app.get('/', (req, res) => res.send('Premium Fire OTP Bot v9.9 (OTP Exact Extraction & UI Fixed) is Running!'));
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 
 // --- MongoDB Setup ---
@@ -270,6 +270,19 @@ function getAdminMenu() {
     };
 }
 
+// 🟢 NEW: Powerful OTP Extractor (Handles spaces, hyphens, and text)
+function extractOTP(msg) {
+    if (!msg) return "Code Not Found";
+    msg = String(msg).trim();
+    if (/^\d{4,8}$/.test(msg)) return msg; // Already clean
+    const match = msg.match(/(?:\d[\s-]*){4,8}/);
+    if (match && match[0]) {
+        let digits = match[0].replace(/\D/g, ''); // Remove spaces/hyphens
+        if (digits.length >= 4 && digits.length <= 8) return digits;
+    }
+    return msg; // Fallback to full text if nothing found
+}
+
 // --- Force Subscribe ---
 async function checkForceSub(chatId) {
     if (chatId === ADMIN_ID) return true;
@@ -432,7 +445,7 @@ bot.on('message', async (msg) => {
                 if (lastOrder.panel === 'nexa') {
                     const res = await apiRequest('get', `${BASE_URL}/api/v1/numbers/${lastOrder.numId}/sms`, null, 5000);
                     if (res.data && res.data.success && res.data.otp) {
-                        otpFound = true; finalOtp = res.data.otp;
+                        otpFound = true; finalOtp = extractOTP(res.data.otp);
                     }
                 } else if (lastOrder.panel === 'mk') {
                     await mkRequest('check_otp').catch(()=>{});
@@ -445,12 +458,13 @@ bot.on('message', async (msg) => {
                         
                         if (matched && matched.status === 'success') {
                             otpFound = true;
-                            // Full SMS থেকে শুধু কোড ফিল্টার করা
-                            let smsText = matched.full_sms_list ? matched.full_sms_list.split('|||')[0] : (matched.full_sms || '');
-                            if (!smsText && matched.otps) smsText = matched.otps.split('|||')[0];
-                            const matchRegex = smsText.match(/\d{4,8}/);
-                            finalOtp = matchRegex ? matchRegex[0] : (smsText || "Code Not Found");
-                            if (finalOtp.toLowerCase() === 'your') finalOtp = "Code Not Found";
+                            let smsText = "";
+                            if (matched.full_sms_list) smsText = matched.full_sms_list.split('|||')[0];
+                            else if (matched.full_sms) smsText = matched.full_sms;
+                            else if (matched.otps) smsText = matched.otps.split('|||')[0];
+                            
+                            finalOtp = extractOTP(smsText);
+                            if (finalOtp.toLowerCase() === 'your' || finalOtp.trim() === '') finalOtp = "Code Not Found";
                         }
                     }
                 }
@@ -869,7 +883,7 @@ bot.on('callback_query', async (query) => {
                         if (panel === 'nexa') {
                             const res = await apiRequest('get', `${BASE_URL}/api/v1/numbers/${numId}/sms`, null, 5000);
                             if (res.data && res.data.success && res.data.otp) {
-                                otpFound = true; otpCode = res.data.otp;
+                                otpFound = true; otpCode = extractOTP(res.data.otp);
                             }
                         } else if (panel === 'mk') {
                             await mkRequest('check_otp').catch(()=>{});
@@ -883,7 +897,6 @@ bot.on('callback_query', async (query) => {
                                 if (matched && matched.status === 'success') {
                                     otpFound = true;
                                     
-                                    // 🟢 REGEX PARSER: Get the original SMS text
                                     let smsText = "";
                                     if (matched.full_sms_list) {
                                         smsText = matched.full_sms_list.split('|||')[0];
@@ -893,15 +906,7 @@ bot.on('callback_query', async (query) => {
                                         smsText = matched.otps.split('|||')[0];
                                     }
 
-                                    // Extract 4 to 8 digit number automatically
-                                    const matchRegex = smsText.match(/\d{4,8}/);
-                                    if (matchRegex && matchRegex[0]) {
-                                        otpCode = matchRegex[0];
-                                    } else {
-                                        otpCode = smsText || "Code Not Found";
-                                    }
-                                    
-                                    // Safety fallback if it still captures 'your' or empty
+                                    otpCode = extractOTP(smsText);
                                     if (otpCode.toLowerCase() === 'your' || otpCode.trim() === '') {
                                         otpCode = "Code Not Found (Check SMS)";
                                     }
@@ -923,6 +928,8 @@ bot.on('callback_query', async (query) => {
                 updateUserStat(chatId, 'otp');
                 updateGlobalStats('success');
                 
+                const formatPhone = lastOrder.phone.startsWith('+') ? lastOrder.phone : '+' + lastOrder.phone;
+                const boxNumber = `╔════════════════════╗\n║ 📱 \`${formatPhone}\`\n╚════════════════════╝`;
                 const platDisplay = `${getPlatIcon(lastOrder.plat)} ${lastOrder.plat.charAt(0).toUpperCase() + lastOrder.plat.slice(1)}`;
                 
                 const otpMarkup = { 
@@ -932,7 +939,8 @@ bot.on('callback_query', async (query) => {
                     ] 
                 };
                 
-                await bot.editMessageText(`🎉 *Congratulations! Boss*\n\n✅ *OTP Code:* \`${otpCode}\``, { chat_id: chatId, message_id: countMsgId, parse_mode: 'Markdown', reply_markup: otpMarkup }).catch(()=>{});
+                // সাকসেস মেসেজ আগের ডিজাইনের সাথে ডাবল লাইনের বক্সসহ 
+                await bot.editMessageText(`📱 *Platform:* ${platDisplay}\n🌍 *Country:* ${lastOrder.country}\n\n${boxNumber}\n\n🎉 *Congratulations! Boss*\n✅ *OTP Code:* \`${otpCode}\``, { chat_id: chatId, message_id: countMsgId, parse_mode: 'Markdown', reply_markup: otpMarkup }).catch(()=>{});
                 
                 const maskedPhone = maskNumber(lastOrder.phone);
                 const groupBoxNumber = `╔════════════════════╗\n║ 📱 \`${maskedPhone}\`\n╚════════════════════╝`;
@@ -948,4 +956,4 @@ bot.on('callback_query', async (query) => {
 });
 
 loadApiKeys().then(() => console.log("🔑 API Keys loaded from MongoDB."));
-console.log("🚀 Premium Bulletproof Bot v9.8 (Final MK Network Regex Fix) is Alive!");
+console.log("🚀 Premium Bulletproof Bot v9.9 (OTP Exact Extraction & UI Fixed) is Alive!");
