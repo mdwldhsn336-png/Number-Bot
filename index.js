@@ -1010,5 +1010,25 @@ bot.on('callback_query', async (query) => {
     } catch(e) { bot.answerCallbackQuery(query.id, { text: "⚠️ Temporary Error!", show_alert: true }); }
 });
 
-Promise.all([loadApiKeys(), loadMkCookies()]).then(() => console.log("🔑 API & MK Cookies loaded from MongoDB."));
+Promise.all([loadApiKeys(), loadMkCookies()]).then(() => {
+    console.log("🔑 API & MK Cookies loaded from MongoDB.");
+    
+    // ==========================================
+    // 🔄 MK NETWORK KEEP-ALIVE (Anti-Session Expire)
+    // ==========================================
+    // এই ফাংশনটি প্রতি ১০ মিনিট পরপর MK সার্ভারে একটি সাইলেন্ট রিকোয়েস্ট পাঠাবে,
+    // যার ফলে ব্রাউজার বন্ধ থাকলেও সেশন (Cookie) কখনো এক্সপায়ার হবে না!
+    setInterval(async () => {
+        try {
+            if (mkCookies && mkCookies.length > 10) {
+                const dateFilter = getMkDate();
+                await mkRequest('get_history', { filter: 'all', page: 1, limit: 1, date: dateFilter });
+                // console.log("🔄 MK Network Session Maintained.");
+            }
+        } catch (e) {
+            // console.error("⚠️ MK Network Keep-Alive Error.");
+        }
+    }, 10 * 60 * 1000); // 10 Minutes
+});
+
 console.log("🚀 Premium Bulletproof Bot v9.9 (OTP Exact Extraction & UI Fixed) is Alive!");
