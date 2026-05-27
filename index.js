@@ -872,7 +872,7 @@ bot.on('callback_query', async (query) => {
                         }
                         if (!numId) numId = finalPhone; 
                     } else if (resData && resData.message) {
-                        apiErrorMsg = `⚠️ *MK Server:* ${resData.message}`;
+                        apiErrorMsg = `⚠️ * Server:* ${resData.message}`;
                     }
                 }
 
