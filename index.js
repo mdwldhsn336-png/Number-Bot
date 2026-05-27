@@ -72,10 +72,24 @@ const activePolls = new Map();
 const deliveredOtps = new Set();
 
 // ==========================================
-// 🌐 MK NETWORK V3 SETUP
+// 🌐 MK NETWORK V3 SETUP (WITH DYNAMIC COOKIES)
 // ==========================================
-const MK_COOKIES = process.env.MK_COOKIES || "PHPSESSID=ci4itr3sbltg20bpmst0tksv52; mk_remember=21dd02e264eeba74886d9d23%3Aab042c38088fb96c7dea474770d54308d976eab68aa391a16f48ba7198cec0c6";
+let mkCookies = process.env.MK_COOKIES || "PHPSESSID=ci4itr3sbltg20bpmst0tksv52; mk_remember=21dd02e264eeba74886d9d23%3Aab042c38088fb96c7dea474770d54308d976eab68aa391a16f48ba7198cec0c6";
 const MK_API_URL = "https://mknetworkbd.com/API/api_handler_test.php";
+
+async function loadMkCookies() {
+    try {
+        const doc = await Setting.findOne({ key: 'mk_cookies' });
+        if (doc && doc.data && doc.data.cookie) {
+            mkCookies = doc.data.cookie;
+        }
+    } catch (e) {}
+}
+
+async function saveMkCookies(cookie) {
+    await Setting.findOneAndUpdate({ key: 'mk_cookies' }, { data: { cookie } }, { upsert: true });
+    mkCookies = cookie;
+}
 
 // আজকের লোকাল ডেট বের করার ফাংশন (হিস্ট্রি চেকের জন্য)
 function getMkDate() {
@@ -86,7 +100,7 @@ function getMkDate() {
 
 async function mkRequest(action, extraParams = {}) {
     const headers = {
-        'Cookie': MK_COOKIES,
+        'Cookie': mkCookies,
         'Content-Type': 'application/x-www-form-urlencoded',
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
         'Accept': 'application/json, text/plain, */*',
@@ -265,7 +279,7 @@ function getAdminMenu() {
             [{ text: "🌐 Manage Sites", callback_data: "adm_sites", style: "primary" }, { text: "⚙️ Manage Ranges", callback_data: "adm_ranges", style: "primary" }],
             [{ text: "💰 API Balance", callback_data: "adm_balance", style: "primary" }, { text: "📊 Dashboard", callback_data: "adm_dash", style: "primary" }],
             [{ text: "📢 Broadcast Notice", callback_data: "adm_broadcast", style: "primary" }, { text: "👥 User List", callback_data: "adm_userlist", style: "primary" }],
-            [{ text: "🔑 Manage API Keys", callback_data: "adm_apikeys", style: "danger" }]
+            [{ text: "🔑 Manage API Keys", callback_data: "adm_apikeys", style: "danger" }, { text: "🍪 MK Cookies", callback_data: "adm_mkcookie", style: "success" }]
         ]
     };
 }
@@ -411,6 +425,15 @@ bot.on('message', async (msg) => {
                 if (!keys.includes(newKey)) { keys.push(newKey); await saveApiKeys(keys); }
                 bot.sendMessage(chatId, "✅ *API Key added!*", { parse_mode: 'Markdown' });
             } catch (e) {} delete adminState[chatId]; return;
+        }
+        else if (state.action === 'wait_mk_cookie_add') {
+            const newCookie = text.trim();
+            if (!newCookie) { bot.sendMessage(chatId, "❌ Invalid cookie format"); delete adminState[chatId]; return; }
+            try {
+                await saveMkCookies(newCookie);
+                bot.sendMessage(chatId, "✅ *MK Cookie updated successfully!*", { parse_mode: 'Markdown' });
+            } catch (e) { bot.sendMessage(chatId, "❌ Error saving cookie"); } 
+            delete adminState[chatId]; return;
         }
     }
 
@@ -722,6 +745,27 @@ bot.on('callback_query', async (query) => {
             }
         }
 
+        // --- MK Cookies Management ---
+        else if (data === "adm_mkcookie" && chatId === ADMIN_ID) {
+            const maskedCookie = mkCookies.length > 25 ? mkCookies.substring(0, 15) + "........" + mkCookies.slice(-10) : mkCookies;
+            let msgText = `🍪 *MK Network Cookies:*\n\n\`${maskedCookie}\``;
+            let inlineKeyboard = [
+                [{ text: "➕ Add/Update Cookie", callback_data: "add_mkcookie", style: "success" }, { text: "🗑️ Delete Cookie", callback_data: "del_mkcookie", style: "danger" }],
+                [{ text: "🔙 Back", callback_data: "admin_main", style: "danger" }]
+            ];
+            bot.editMessageText(msgText, { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown', reply_markup: { inline_keyboard: inlineKeyboard } });
+        }
+        else if (data === "add_mkcookie" && chatId === ADMIN_ID) {
+            adminState[chatId] = { action: 'wait_mk_cookie_add' };
+            bot.sendMessage(chatId, "✏️ *নতুন MK Cookies লিখুন:*", { parse_mode: 'Markdown' });
+            bot.answerCallbackQuery(query.id);
+        }
+        else if (data === "del_mkcookie" && chatId === ADMIN_ID) {
+            await Setting.deleteOne({ key: 'mk_cookies' }).catch(()=>{});
+            mkCookies = process.env.MK_COOKIES || "PHPSESSID=ci4itr3sbltg20bpmst0tksv52; mk_remember=21dd02e264eeba74886d9d23%3Aab042c38088fb96c7dea474770d54308d976eab68aa391a16f48ba7198cec0c6";
+            bot.editMessageText("✅ *MK Cookie deleted. Reverted to default.*", { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: "🔙 Back", callback_data: "adm_mkcookie", style: "danger" }]] } });
+        }
+
         // --- 2FA Config ---
         else if (data === "add_2fa") {
             adminState[chatId] = { action: 'wait_2fa_secret' };
@@ -787,7 +831,18 @@ bot.on('callback_query', async (query) => {
             const panel = typeof rangeData === 'string' ? 'nexa' : rangeData.panel;
 
             bot.deleteMessage(chatId, msgId);
-            const sentMsg = await bot.sendMessage(chatId, "⏳ *Generating Number...*", { parse_mode: 'Markdown' });
+            const sentMsg = await bot.sendMessage(chatId, "🔄 *Initializing Request...*", { parse_mode: 'Markdown' });
+            
+            // --- Premium Number Generating Animation ---
+            const animFrames = [
+                "🔍 *Searching Server...*",
+                "📡 *Connecting to Panel...*",
+                "🚀 *Generating Number...*"
+            ];
+            for (let frame of animFrames) {
+                await bot.editMessageText(frame, { chat_id: chatId, message_id: sentMsg.message_id, parse_mode: 'Markdown' }).catch(()=>{});
+                await new Promise(r => setTimeout(r, 600)); // 600ms delay per frame
+            }
             
             try {
                 let success = false;
@@ -955,5 +1010,5 @@ bot.on('callback_query', async (query) => {
     } catch(e) { bot.answerCallbackQuery(query.id, { text: "⚠️ Temporary Error!", show_alert: true }); }
 });
 
-loadApiKeys().then(() => console.log("🔑 API Keys loaded from MongoDB."));
+Promise.all([loadApiKeys(), loadMkCookies()]).then(() => console.log("🔑 API & MK Cookies loaded from MongoDB."));
 console.log("🚀 Premium Bulletproof Bot v9.9 (OTP Exact Extraction & UI Fixed) is Alive!");
