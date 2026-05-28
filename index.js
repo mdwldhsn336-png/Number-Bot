@@ -15,7 +15,7 @@ const PORT = process.env.PORT || 3000;
 const SERVER_URL = process.env.SERVER_URL; 
 
 app.use(express.json());
-app.get('/', (req, res) => res.send('Premium Fire OTP Bot v9.9 (OTP Exact Extraction & UI Fixed) is Running!'));
+app.get('/', (req, res) => res.send('Premium Fire OTP Bot v10.1 (Account, Withdraw & Admin Added - Fixed) is Running!'));
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 
 // --- MongoDB Setup ---
@@ -32,6 +32,11 @@ const UserSchema = new mongoose.Schema({
     username: String,
     total_numbers: { type: Number, default: 0 },
     total_otps: { type: Number, default: 0 },
+    today_otps: { type: Number, default: 0 },
+    balance: { type: Number, default: 0 },
+    today_balance: { type: Number, default: 0 },
+    last_active_date: String,
+    banned: { type: Boolean, default: false },
     joined: String,
     two_fa: { type: Array, default: [] }
 });
@@ -43,10 +48,32 @@ const SettingSchema = new mongoose.Schema({
 });
 const Setting = mongoose.model('Setting', SettingSchema);
 
+// Earning History to prevent double payment for same number
+const EarningSchema = new mongoose.Schema({
+    user_id: String,
+    num_id: String,
+    date: String
+});
+const Earning = mongoose.model('Earning', EarningSchema);
+
+// Withdraw Requests
+const WithdrawSchema = new mongoose.Schema({
+    wd_id: String,
+    user_id: String,
+    amount: Number,
+    method: String,
+    account: String,
+    status: { type: String, default: 'pending' },
+    date: String
+});
+const Withdraw = mongoose.model('Withdraw', WithdrawSchema);
+
+
 // --- কনফিগারেশন ---
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const ADMIN_ID = parseInt(process.env.ADMIN_ID);
 const OTP_GROUP_ID = "@otp_number_grp";
+const PAYMENT_GROUP_ID = "-1003925192534"; // Withdraw Requests Group
 const BASE_URL = 'http://63.141.255.227'; // Nexa API Base
 const NUMBER_EXPIRY_MS = 30 * 60 * 1000; // 30 minutes
 
@@ -67,6 +94,7 @@ if (SERVER_URL) {
 }
 
 let adminState = {};
+let userState = {};
 const userLastOrder = new Map();
 const activePolls = new Map();
 const deliveredOtps = new Set();
@@ -91,12 +119,14 @@ async function saveMkCookies(cookie) {
     mkCookies = cookie;
 }
 
-// আজকের লোকাল ডেট বের করার ফাংশন (হিস্ট্রি চেকের জন্য)
-function getMkDate() {
+// আজকের লোকাল ডেট বের করার ফাংশন
+function getLocDate() {
     let today = new Date();
     let offset = today.getTimezoneOffset() * 60000;
     return (new Date(today - offset)).toISOString().split('T')[0];
 }
+
+const getMkDate = getLocDate; 
 
 async function mkRequest(action, extraParams = {}) {
     const headers = {
@@ -176,24 +206,53 @@ async function apiRequest(method, url, data = null, timeout = 8000) {
     throw lastError || new Error('All API keys failed');
 }
 
+// --- App Config (Payment Settings) ---
+async function getAppConfig() {
+    try {
+        let doc = await Setting.findOne({ key: 'app_config' });
+        if (!doc || !doc.data) {
+            return { per_otp_rate: 5, min_withdraw: 50, pay_methods: ['Binance'] };
+        }
+        return doc.data;
+    } catch(e) { return { per_otp_rate: 5, min_withdraw: 50, pay_methods: ['Binance'] }; }
+}
+
+async function saveAppConfig(data) {
+    await Setting.findOneAndUpdate({ key: 'app_config' }, { data }, { upsert: true });
+}
+
 // --- Database functions ---
 async function ensureUser(user) {
-    if (!user || !user.id) return;
+    if (!user || !user.id) return null;
     try {
-        await User.findOneAndUpdate(
-            { id: String(user.id) },
-            { $setOnInsert: { first_name: user.first_name || 'User', username: user.username || 'N/A', joined: new Date().toISOString() } },
-            { upsert: true }
-        );
-    } catch(e) {}
+        const today = getLocDate();
+        let u = await User.findOne({ id: String(user.id) });
+        if (!u) {
+            u = new User({ 
+                id: String(user.id), 
+                first_name: user.first_name || 'User', 
+                username: user.username || 'N/A', 
+                joined: new Date().toISOString(),
+                last_active_date: today
+            });
+            await u.save();
+        } else {
+            if (u.last_active_date !== today) {
+                u.today_otps = 0;
+                u.today_balance = 0;
+                u.last_active_date = today;
+                await u.save();
+            }
+        }
+        return u;
+    } catch(e) { return null; }
 }
 
 async function updateUserStat(userId, type) {
     try {
-        let update = {};
-        if (type === 'number') update = { $inc: { total_numbers: 1 } };
-        if (type === 'otp') update = { $inc: { total_otps: 1 } };
-        await User.findOneAndUpdate({ id: String(userId) }, update);
+        if (type === 'number') {
+            await User.findOneAndUpdate({ id: String(userId) }, { $inc: { total_numbers: 1 } });
+        }
     } catch(e){}
 }
 
@@ -266,7 +325,7 @@ function getMainMenu(chatId) {
     let kb = [
         [{ text: "📱 GET NUMBER", style: "success" }],
         [{ text: "📥 INBOX", style: "primary" }, { text: "📊 TRAFFIC", style: "primary" }],
-        [{ text: "🔐 2FA AUTHENTICATOR", style: "danger" }, { text: "💬 OTP GROUP", style: "primary" }],
+        [{ text: "🔐 2FA AUTHENTICATOR", style: "danger" }, { text: "👤 ACCOUNT", style: "primary" }],
         [{ text: "🎧 SUPPORT", style: "primary" }]
     ];
     if (chatId === ADMIN_ID) kb.push([{ text: "🛠️ ADMIN PANEL", style: "danger" }]);
@@ -278,8 +337,9 @@ function getAdminMenu() {
         inline_keyboard: [
             [{ text: "🌐 Manage Sites", callback_data: "adm_sites", style: "primary" }, { text: "⚙️ Manage Ranges", callback_data: "adm_ranges", style: "primary" }],
             [{ text: "💰 API Balance", callback_data: "adm_balance", style: "primary" }, { text: "📊 Dashboard", callback_data: "adm_dash", style: "primary" }],
-            [{ text: "📢 Broadcast Notice", callback_data: "adm_broadcast", style: "primary" }, { text: "👥 User List", callback_data: "adm_userlist", style: "primary" }],
-            [{ text: "🔑 Manage API Keys", callback_data: "adm_apikeys", style: "danger" }, { text: "🍪 MK Cookies", callback_data: "adm_mkcookie", style: "success" }]
+            [{ text: "📢 Broadcast", callback_data: "adm_broadcast", style: "primary" }, { text: "👥 Manage Users", callback_data: "adm_users", style: "primary" }],
+            [{ text: "💳 Payment Settings", callback_data: "adm_paycfg", style: "success" }, { text: "🔑 Manage API Keys", callback_data: "adm_apikeys", style: "danger" }],
+            [{ text: "🍪 MK Cookies", callback_data: "adm_mkcookie", style: "primary" }]
         ]
     };
 }
@@ -300,6 +360,7 @@ function extractOTP(msg) {
 // --- Force Subscribe ---
 async function checkForceSub(chatId) {
     if (chatId === ADMIN_ID) return true;
+    // OTP Group restored in the mandatory check loop
     const channels = ['@developer_walid', '@fireotp_method', OTP_GROUP_ID];
     let isSubscribed = true;
     let buttons = [];
@@ -319,7 +380,7 @@ async function checkForceSub(chatId) {
 
     if (!isSubscribed) {
         buttons.push([{ text: "✅ Joined (Check Again)", callback_data: "check_joined", style: "success" }]);
-        bot.sendMessage(chatId, "⚠️ *বট ব্যবহার করতে নিচের চ্যানেল/গ্রুপগুলোতে জয়েন করুন:*", { parse_mode: 'Markdown', reply_markup: { inline_keyboard: buttons } });
+        bot.sendMessage(chatId, "⚠️ *বট ব্যবহার করতে নিচের চ্যানেলগুলোতে জয়েন করুন:*", { parse_mode: 'Markdown', reply_markup: { inline_keyboard: buttons } });
         return false;
     }
     return true;
@@ -327,23 +388,89 @@ async function checkForceSub(chatId) {
 
 // --- Commands & Messages ---
 bot.onText(/\/start/, async (msg) => {
-    await ensureUser(msg.from);
+    const u = await ensureUser(msg.from);
+    if (u && u.banned) return bot.sendMessage(msg.chat.id, "🚫 *You are banned from using this bot.*", { parse_mode: 'Markdown' });
     if (!(await checkForceSub(msg.chat.id))) return;
     const welcomeMsg = ` 💐*WELCOME TO FIRE OTP BOT*\n\n👋 Hello, *${msg.from.first_name}*!\n\n🚀 _Get unlimited virtual numbers and instant OTPs for any platform in seconds._\n\n👇 Please choose an option from the menu below:`;
     bot.sendMessage(msg.chat.id, welcomeMsg, { parse_mode: 'Markdown', ...getMainMenu(msg.chat.id) });
 });
 
 bot.on('message', async (msg) => {
-    await ensureUser(msg.from);
     const chatId = msg.chat.id;
     const text = msg.text;
     if (!text || text.startsWith('/')) return;
 
-    const menuButtons = ["📱 GET NUMBER", "📥 INBOX", "📊 TRAFFIC", "🔐 2FA AUTHENTICATOR", "💬 OTP GROUP", "🎧 SUPPORT", "🛠️ ADMIN PANEL"];
-    if (menuButtons.some(btn => text.includes(btn)) && adminState[chatId]) {
-        delete adminState[chatId];
+    const u = await ensureUser(msg.from);
+    if (u && u.banned) return bot.sendMessage(chatId, "🚫 *You are banned from using this bot.*", { parse_mode: 'Markdown' });
+
+    const menuButtons = ["📱 GET NUMBER", "📥 INBOX", "📊 TRAFFIC", "🔐 2FA AUTHENTICATOR", "👤 ACCOUNT", "🎧 SUPPORT", "🛠️ ADMIN PANEL"];
+    
+    // Clear states if menu button clicked
+    if (menuButtons.some(btn => text.includes(btn))) {
+        if(adminState[chatId]) delete adminState[chatId];
+        if(userState[chatId]) delete userState[chatId];
     }
-    else if (adminState[chatId]) {
+    
+    // --- USER STATE MACHINE (Withdrawals) ---
+    if (userState[chatId]) {
+        const state = userState[chatId];
+        
+        if (state.action === 'wait_wd_id') {
+            state.account_id = text.trim();
+            state.action = 'wait_wd_amount';
+            bot.sendMessage(chatId, `✅ *Method:* ${state.method}\n✅ *Account/ID:* \`${state.account_id}\`\n\n💰 *এবার কত টাকা উইথড্র করতে চান তা লিখুন:*`, { parse_mode: 'Markdown' });
+            return;
+        }
+        else if (state.action === 'wait_wd_amount') {
+            const amount = parseFloat(text.trim());
+            if (isNaN(amount) || amount <= 0) {
+                return bot.sendMessage(chatId, "❌ *Please enter a valid amount.*", { parse_mode: 'Markdown' });
+            }
+            
+            try {
+                const config = await getAppConfig();
+                const userDoc = await User.findOne({ id: String(chatId) });
+                
+                if (amount < config.min_withdraw) {
+                    return bot.sendMessage(chatId, `⚠️ *Minimum Withdraw is ${config.min_withdraw} ৳*`, { parse_mode: 'Markdown' });
+                }
+                if (amount > userDoc.balance) {
+                    return bot.sendMessage(chatId, "❌ *Insufficient Balance!*", { parse_mode: 'Markdown' });
+                }
+
+                // Deduct balance and create request
+                userDoc.balance -= amount;
+                await userDoc.save();
+
+                const wd_id = Math.random().toString(36).substring(2, 10).toUpperCase();
+                await Withdraw.create({
+                    wd_id: wd_id,
+                    user_id: String(chatId),
+                    amount: amount,
+                    method: state.method,
+                    account: state.account_id,
+                    date: getLocDate()
+                });
+
+                bot.sendMessage(chatId, `✅ *Withdraw Request Submitted!*\n\n💰 *Amount:* \`${amount}\` ৳\n💳 *Method:* ${state.method}\n\n_Please wait for admin approval._`, { parse_mode: 'Markdown' });
+
+                // Send to Payment Group
+                const wdGroupMsg = `🔔 *NEW WITHDRAW REQUEST*\n\n👤 *User ID:* \`${chatId}\`\n💳 *Method:* ${state.method}\n🏦 *Account/ID:* \`${state.account_id}\`\n💰 *Amount:* \`${amount}\` ৳\n\n_Select an action below:_`;
+                const wdMarkup = { inline_keyboard: [[
+                    { text: "✅ Approve", callback_data: `wd_appr_${wd_id}`, style: "success" },
+                    { text: "❌ Cancel", callback_data: `wd_canc_${wd_id}`, style: "danger" }
+                ]]};
+                bot.sendMessage(PAYMENT_GROUP_ID, wdGroupMsg, { parse_mode: 'Markdown', reply_markup: wdMarkup }).catch(()=>{});
+
+            } catch (e) { bot.sendMessage(chatId, "❌ Error processing request."); }
+            
+            delete userState[chatId];
+            return;
+        }
+    }
+
+    // --- ADMIN STATE MACHINE ---
+    if (adminState[chatId]) {
         const state = adminState[chatId];
 
         if (state.action === 'wait_2fa_secret') {
@@ -364,7 +491,6 @@ bot.on('message', async (msg) => {
             bot.sendMessage(chatId, `✅ সাইট *${getPlatIcon(text)} ${text}* যুক্ত হয়েছে!`, { parse_mode: 'Markdown' });
             delete adminState[chatId]; return;
         }
-        
         else if (state.action === 'wait_country_name') {
             state.country = text;
             const markup = {
@@ -379,12 +505,7 @@ bot.on('message', async (msg) => {
         else if (state.action === 'wait_range_val') {
             const ranges = await loadRanges();
             if (!ranges[state.platform]) ranges[state.platform] = {};
-            
-            ranges[state.platform][state.country] = { 
-                range: text, 
-                panel: state.panel || 'nexa' 
-            };
-            
+            ranges[state.platform][state.country] = { range: text, panel: state.panel || 'nexa' };
             await saveRanges(ranges);
             bot.sendMessage(chatId, `✅ *${state.platform}* এর জন্য রেঞ্জ সেভ হয়েছে!`, { parse_mode: 'Markdown' });
             const icon = getPlatIcon(state.platform);
@@ -398,10 +519,7 @@ bot.on('message', async (msg) => {
         }
         else if (state.action === 'wait_range_edit') {
             const ranges = await loadRanges();
-            ranges[state.platform][state.country] = {
-                range: text,
-                panel: state.panel 
-            };
+            ranges[state.platform][state.country] = { range: text, panel: state.panel };
             await saveRanges(ranges);
             bot.sendMessage(chatId, `✅ Range updated successfully!`);
             delete adminState[chatId]; return;
@@ -429,10 +547,49 @@ bot.on('message', async (msg) => {
         else if (state.action === 'wait_mk_cookie_add') {
             const newCookie = text.trim();
             if (!newCookie) { bot.sendMessage(chatId, "❌ Invalid cookie format"); delete adminState[chatId]; return; }
-            try {
-                await saveMkCookies(newCookie);
-                bot.sendMessage(chatId, "✅ *MK Cookie updated successfully!*", { parse_mode: 'Markdown' });
-            } catch (e) { bot.sendMessage(chatId, "❌ Error saving cookie"); } 
+            try { await saveMkCookies(newCookie); bot.sendMessage(chatId, "✅ *MK Cookie updated!*", { parse_mode: 'Markdown' }); } 
+            catch (e) { bot.sendMessage(chatId, "❌ Error saving cookie"); } 
+            delete adminState[chatId]; return;
+        }
+        // Admin Payment Settings States
+        else if (state.action === 'wait_otp_rate') {
+            const val = parseFloat(text.trim());
+            if(!isNaN(val) && val >= 0) {
+                const config = await getAppConfig(); config.per_otp_rate = val; await saveAppConfig(config);
+                bot.sendMessage(chatId, `✅ *OTP Rate updated to ${val} ৳*`, { parse_mode: 'Markdown' });
+            } else bot.sendMessage(chatId, "❌ Invalid amount");
+            delete adminState[chatId]; return;
+        }
+        else if (state.action === 'wait_min_wd') {
+            const val = parseFloat(text.trim());
+            if(!isNaN(val) && val > 0) {
+                const config = await getAppConfig(); config.min_withdraw = val; await saveAppConfig(config);
+                bot.sendMessage(chatId, `✅ *Min Withdraw updated to ${val} ৳*`, { parse_mode: 'Markdown' });
+            } else bot.sendMessage(chatId, "❌ Invalid amount");
+            delete adminState[chatId]; return;
+        }
+        else if (state.action === 'wait_pay_method_add') {
+            const m = text.trim();
+            if(m) {
+                const config = await getAppConfig(); 
+                if(!config.pay_methods.includes(m)) { config.pay_methods.push(m); await saveAppConfig(config); }
+                bot.sendMessage(chatId, `✅ *Payment Method '${m}' added!*`, { parse_mode: 'Markdown' });
+            }
+            delete adminState[chatId]; return;
+        }
+        // Admin User Manage State
+        else if (state.action === 'wait_manage_userid') {
+            const uid = text.trim();
+            const targetUser = await User.findOne({ id: String(uid) });
+            if (!targetUser) {
+                bot.sendMessage(chatId, "❌ *User not found!*", { parse_mode: 'Markdown' });
+            } else {
+                const msgText = `👤 *USER DETAILS*\n\nID: \`${targetUser.id}\`\nName: ${targetUser.first_name}\nUsername: ${targetUser.username}\n\n💰 *Total Bal:* \`${targetUser.balance}\` ৳\n💸 *Today Bal:* \`${targetUser.today_balance}\` ৳\n\n📊 *Total OTPs:* \`${targetUser.total_otps}\`\n📈 *Today OTPs:* \`${targetUser.today_otps}\`\n\n🚫 *Status:* ${targetUser.banned ? 'BANNED' : 'ACTIVE'}`;
+                const markup = { inline_keyboard: [
+                    [{ text: targetUser.banned ? "✅ Unban User" : "🚫 Ban User", callback_data: `adm_togban_${targetUser.id}`, style: targetUser.banned ? "success" : "danger" }]
+                ]};
+                bot.sendMessage(chatId, msgText, { parse_mode: 'Markdown', reply_markup: markup });
+            }
             delete adminState[chatId]; return;
         }
     }
@@ -498,8 +655,7 @@ bot.on('message', async (msg) => {
                     const platDisplay = `${getPlatIcon(lastOrder.plat)} ${lastOrder.plat.charAt(0).toUpperCase() + lastOrder.plat.slice(1)}`;
                     const replyMarkup = { 
                         inline_keyboard: [
-                            [{ text: ` ${finalOtp}`, copy_text: { text: finalOtp }, style: "success" }],
-                            [{ text: "💬 OTP Group", url: `https://t.me/${OTP_GROUP_ID.replace('@', '')}`, style: "primary" }]
+                            [{ text: ` ${finalOtp}`, copy_text: { text: finalOtp }, style: "success" }]
                         ] 
                     };
                     bot.editMessageText(`📥 *Latest Inbox Found:*\n\n📱 *Platform:* ${platDisplay}\n🌍 *Country:* ${lastOrder.country}\n\n${boxNumber}`, { chat_id: chatId, message_id: sentMsg.message_id, parse_mode: 'Markdown', reply_markup: replyMarkup });
@@ -516,11 +672,11 @@ bot.on('message', async (msg) => {
             sorted.forEach(([key, count], index) => { msgText += `*${index + 1}.* ${key} ➔ \`${count} OTPs\`\n`; });
             bot.sendMessage(chatId, msgText, { parse_mode: 'Markdown' });
         }
-        else if (text === "💬 OTP GROUP") {
-            bot.sendMessage(chatId, "🔗 *Join our Official OTP Group for real‑time updates:*", {
-                parse_mode: 'Markdown',
-                reply_markup: { inline_keyboard: [[{ text: "💬 OTP Group", url: `https://t.me/${OTP_GROUP_ID.replace('@', '')}`, style: "success" }]] }
-            });
+        else if (text === "👤 ACCOUNT") {
+            const uData = await ensureUser(msg.from);
+            const msgText = `👤 *USER ACCOUNT*\n\n🔖 *ID:* \`${uData.id}\`\n👤 *Name:* ${uData.first_name}\n\n💰 *Total Balance:* \`${uData.balance}\` ৳\n💸 *Today Earnings:* \`${uData.today_balance}\` ৳\n\n📊 *Total OTPs:* \`${uData.total_otps}\`\n📈 *Today OTPs:* \`${uData.today_otps}\``;
+            const markup = { inline_keyboard: [[{ text: "💵 Withdraw Funds", callback_data: "wd_start", style: "success" }]] };
+            bot.sendMessage(chatId, msgText, { parse_mode: 'Markdown', reply_markup: markup });
         }
         else if (text === "🔐 2FA AUTHENTICATOR") {
             const saved2fa = await get2FA(chatId);
@@ -552,13 +708,74 @@ bot.on('callback_query', async (query) => {
     const data = query.data;
     const msgId = query.message.message_id;
 
+    // --- Admin Approval for Withdraws (Payment Group logic) ---
+    if (data.startsWith('wd_appr_') || data.startsWith('wd_canc_')) {
+        if (query.from.id !== ADMIN_ID) {
+            return bot.answerCallbackQuery(query.id, { text: "❌ Only Admin can do this!", show_alert: true });
+        }
+        const isApprove = data.startsWith('wd_appr_');
+        const wd_id = data.split('_')[2];
+        
+        try {
+            const reqDoc = await Withdraw.findOne({ wd_id: wd_id });
+            if (!reqDoc || reqDoc.status !== 'pending') {
+                return bot.answerCallbackQuery(query.id, { text: "⚠️ Already processed or not found.", show_alert: true });
+            }
+            
+            if (isApprove) {
+                reqDoc.status = 'approved';
+                await reqDoc.save();
+                bot.editMessageText(query.message.text + "\n\n✅ *STATUS: APPROVED*", { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown' });
+                bot.sendMessage(reqDoc.user_id, `🎉 *Withdrawal Approved!*\n\n💰 Amount: \`${reqDoc.amount}\` ৳\n💳 Method: ${reqDoc.method}\n\n_Your funds have been sent successfully._`, { parse_mode: 'Markdown' }).catch(()=>{});
+            } else {
+                reqDoc.status = 'rejected';
+                await reqDoc.save();
+                // Refund
+                const uDoc = await User.findOne({ id: reqDoc.user_id });
+                if (uDoc) { uDoc.balance += reqDoc.amount; await uDoc.save(); }
+                bot.editMessageText(query.message.text + "\n\n❌ *STATUS: REJECTED*", { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown' });
+                bot.sendMessage(reqDoc.user_id, `❌ *Withdrawal Rejected!*\n\n💰 Amount: \`${reqDoc.amount}\` ৳ has been refunded to your bot balance.`, { parse_mode: 'Markdown' }).catch(()=>{});
+            }
+        } catch (e) { bot.answerCallbackQuery(query.id, { text: "Error processing.", show_alert: true }); }
+        return bot.answerCallbackQuery(query.id);
+    }
+
+    // Checking if user is banned
+    const uCheck = await User.findOne({ id: String(chatId) });
+    if(uCheck && uCheck.banned && chatId !== ADMIN_ID) {
+        return bot.answerCallbackQuery(query.id, { text: "🚫 You are banned.", show_alert: true });
+    }
+
     try {
         if (data === "check_joined") {
             if (await checkForceSub(chatId)) {
                 bot.deleteMessage(chatId, msgId);
-                bot.sendMessage(chatId, "✅ *Boss, এখন Number নিয়ে কাজ শুরু করে দিন। \n Method নাহ জানলে Method Channel যান।*", { parse_mode: 'Markdown', ...getMainMenu(chatId) });
+                bot.sendMessage(chatId, "✅ *Boss, এখন Number নিয়ে কাজ শুরু করে দিন।*", { parse_mode: 'Markdown', ...getMainMenu(chatId) });
             } else bot.answerCallbackQuery(query.id, { text: "⚠️ এখনও সব চ্যানেলে জয়েন করেননি!", show_alert: true });
         }
+        
+        // --- User: Withdrawal Flow ---
+        else if (data === "wd_start") {
+            const config = await getAppConfig();
+            let methods = config.pay_methods || [];
+            if(methods.length === 0) {
+                return bot.answerCallbackQuery(query.id, { text: "⚠️ No payment methods available currently.", show_alert: true });
+            }
+            let inlineKeyboard = [];
+            methods.forEach(m => {
+                inlineKeyboard.push([{ text: `💳 ${m}`, callback_data: `wd_m_${m}`, style: "primary" }]);
+            });
+            bot.sendMessage(chatId, "📌 *Select Payment Method:*", { parse_mode: 'Markdown', reply_markup: { inline_keyboard: inlineKeyboard } });
+            bot.answerCallbackQuery(query.id);
+        }
+        else if (data.startsWith('wd_m_')) {
+            const method = data.split('wd_m_')[1];
+            userState[chatId] = { action: 'wait_wd_id', method: method };
+            bot.sendMessage(chatId, `✏️ *আপনার ${method} Account ID / Number দিন:*`, { parse_mode: 'Markdown' });
+            bot.answerCallbackQuery(query.id);
+        }
+
+        // --- Admin Menus ---
         else if (data === "admin_main" && chatId === ADMIN_ID) {
             bot.editMessageText("🛠 *Admin Control Panel*\n\nSelect an option below:", { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown', reply_markup: getAdminMenu() });
         }
@@ -585,6 +802,63 @@ bot.on('callback_query', async (query) => {
                 bot.editMessageText(dashText, { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: "🔙 Back", callback_data: "admin_main", style: "danger" }]] }});
             } catch (e) {}
         }
+
+        // --- Admin: Payment Settings ---
+        else if (data === "adm_paycfg" && chatId === ADMIN_ID) {
+            const config = await getAppConfig();
+            let msg = `💳 *Payment Settings*\n\n💰 *Per OTP Earning:* \`${config.per_otp_rate}\` ৳\n📉 *Min Withdraw:* \`${config.min_withdraw}\` ৳\n\n💳 *Methods:* ${config.pay_methods.join(', ') || 'None'}`;
+            let kb = [
+                [{ text: "✏️ Edit Earning/OTP", callback_data: "adm_edit_otprate", style: "primary" }, { text: "✏️ Edit Min Withdraw", callback_data: "adm_edit_minwd", style: "primary" }],
+                [{ text: "➕ Add Method", callback_data: "adm_add_paym", style: "success" }, { text: "🗑️ Delete Method", callback_data: "adm_del_paym", style: "danger" }],
+                [{ text: "🔙 Back", callback_data: "admin_main", style: "danger" }]
+            ];
+            bot.editMessageText(msg, { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown', reply_markup: { inline_keyboard: kb } });
+        }
+        else if (data === "adm_edit_otprate" && chatId === ADMIN_ID) {
+            adminState[chatId] = { action: 'wait_otp_rate' }; bot.sendMessage(chatId, "✏️ *Enter new earning per OTP (৳):*", { parse_mode: 'Markdown' }); bot.answerCallbackQuery(query.id);
+        }
+        else if (data === "adm_edit_minwd" && chatId === ADMIN_ID) {
+            adminState[chatId] = { action: 'wait_min_wd' }; bot.sendMessage(chatId, "✏️ *Enter new minimum withdraw limit (৳):*", { parse_mode: 'Markdown' }); bot.answerCallbackQuery(query.id);
+        }
+        else if (data === "adm_add_paym" && chatId === ADMIN_ID) {
+            adminState[chatId] = { action: 'wait_pay_method_add' }; bot.sendMessage(chatId, "✏️ *Enter new payment method name (e.g. Binance):*", { parse_mode: 'Markdown' }); bot.answerCallbackQuery(query.id);
+        }
+        else if (data === "adm_del_paym" && chatId === ADMIN_ID) {
+            const config = await getAppConfig();
+            let kb = [];
+            config.pay_methods.forEach(m => {
+                kb.push([{ text: `🗑️ ${m}`, callback_data: `admdel_m_${m}`, style: "danger" }]);
+            });
+            kb.push([{ text: "🔙 Back", callback_data: "adm_paycfg", style: "primary" }]);
+            bot.editMessageText("📌 *Select method to delete:*", { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown', reply_markup: { inline_keyboard: kb } });
+        }
+        else if (data.startsWith('admdel_m_') && chatId === ADMIN_ID) {
+            const m = data.split('admdel_m_')[1];
+            const config = await getAppConfig();
+            config.pay_methods = config.pay_methods.filter(x => x !== m);
+            await saveAppConfig(config);
+            bot.editMessageText(`✅ Deleted '${m}'`, { chat_id: chatId, message_id: msgId, reply_markup: { inline_keyboard: [[{ text: "🔙 Back", callback_data: "adm_paycfg", style: "danger" }]] } });
+        }
+
+        // --- Admin: User Management ---
+        else if (data === "adm_users" && chatId === ADMIN_ID) {
+            adminState[chatId] = { action: 'wait_manage_userid' };
+            bot.sendMessage(chatId, "✏️ *Enter User ID to manage:*", { parse_mode: 'Markdown' });
+            bot.answerCallbackQuery(query.id);
+        }
+        else if (data.startsWith('adm_togban_') && chatId === ADMIN_ID) {
+            const targetId = data.split('_')[2];
+            const targetUser = await User.findOne({ id: String(targetId) });
+            if (targetUser) {
+                targetUser.banned = !targetUser.banned;
+                await targetUser.save();
+                bot.editMessageText(`✅ *User ${targetUser.banned ? 'BANNED' : 'UNBANNED'} successfully!*`, { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown' });
+            }
+            bot.answerCallbackQuery(query.id);
+        }
+
+
+        // --- Admin Sites & Ranges (Existing) ---
         else if (data === "adm_sites" && chatId === ADMIN_ID) {
             const ranges = await loadRanges();
             let inlineKeyboard = [];
@@ -673,8 +947,6 @@ bot.on('callback_query', async (query) => {
             if (ranges[plat] && ranges[plat][country]) { delete ranges[plat][country]; await saveRanges(ranges); }
             bot.editMessageText(`✅ কান্ট্রি ও রেঞ্জ ডিলিট করা হয়েছে।`, { chat_id: chatId, message_id: msgId, reply_markup: { inline_keyboard: [[{ text: "🔙 Back", callback_data: `ar_p_${plat}`, style: "danger" }]] } });
         }
-
-        // --- Broadcast & User List ---
         else if (data === "adm_broadcast" && chatId === ADMIN_ID) {
             const doc = await Setting.findOne({ key: 'notice' });
             let noticeText = "None";
@@ -696,20 +968,6 @@ bot.on('callback_query', async (query) => {
             await Setting.deleteOne({ key: 'notice' }).catch(()=>{});
             bot.editMessageText("✅ *Notice deleted.*", { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: "🔙 Back", callback_data: "admin_main", style: "danger" }]] } });
         }
-        else if (data === "adm_userlist" && chatId === ADMIN_ID) {
-            bot.answerCallbackQuery(query.id, { text: "⏳ Preparing user list..." });
-            try {
-                const users = await User.find({});
-                let userList = "👥 *USER LIST* 👥\n\nID | Name | Username | Numbers | OTPs | Joined\n--------------------------------------------------\n";
-                users.forEach(u => {
-                    userList += `${u.id} | ${u.first_name || 'N/A'} | ${u.username || 'N/A'} | ${u.total_numbers || 0} | ${u.total_otps || 0} | ${u.joined ? new Date(u.joined).toLocaleDateString() : 'N/A'}\n`;
-                });
-                const buffer = Buffer.from(userList, 'utf-8');
-                await bot.sendDocument(chatId, buffer, {}, { filename: 'users.txt', contentType: 'text/plain' });
-            } catch (e) { bot.sendMessage(chatId, "⚠️ *Error generating user list.*", { parse_mode: 'Markdown' }); }
-        }
-
-        // --- API Keys Management ---
         else if (data === "adm_apikeys" && chatId === ADMIN_ID) {
             const doc = await Setting.findOne({ key: 'api_keys' });
             let keys = doc && doc.data && doc.data.keys ? doc.data.keys : [];
@@ -744,8 +1002,6 @@ bot.on('callback_query', async (query) => {
                 bot.answerCallbackQuery(query.id, { text: "Invalid key index.", show_alert: true });
             }
         }
-
-        // --- MK Cookies Management ---
         else if (data === "adm_mkcookie" && chatId === ADMIN_ID) {
             const maskedCookie = mkCookies.length > 25 ? mkCookies.substring(0, 15) + "........" + mkCookies.slice(-10) : mkCookies;
             let msgText = `🍪 *MK Network Cookies:*\n\n\`${maskedCookie}\``;
@@ -872,7 +1128,7 @@ bot.on('callback_query', async (query) => {
                         }
                         if (!numId) numId = finalPhone; 
                     } else if (resData && resData.message) {
-                        apiErrorMsg = `⚠️ * Server:* ${resData.message}`;
+                        apiErrorMsg = `⚠️ *MK Server:* ${resData.message}`;
                     }
                 }
 
@@ -980,13 +1236,31 @@ bot.on('callback_query', async (query) => {
                 deliveredOtps.add(numId);
                 activePolls.delete(numId);
                 updateTraffic(lastOrder.plat, lastOrder.country);
-                updateUserStat(chatId, 'otp');
-                updateGlobalStats('success');
                 
+                // 🟢 ONE-TIME EARNING LOGIC (Prevents double payment for same number)
+                const checkEarn = await Earning.findOne({ num_id: String(numId), user_id: String(chatId) });
+                if (!checkEarn) {
+                    const config = await getAppConfig();
+                    const rate = config.per_otp_rate || 0;
+                    
+                    await Earning.create({ num_id: String(numId), user_id: String(chatId), date: getLocDate() });
+                    
+                    const uDoc = await User.findOne({ id: String(chatId) });
+                    if(uDoc) {
+                        uDoc.balance += rate;
+                        uDoc.today_balance += rate;
+                        uDoc.total_otps += 1;
+                        uDoc.today_otps += 1;
+                        await uDoc.save();
+                    }
+                    updateGlobalStats('success');
+                }
+
                 const formatPhone = lastOrder.phone.startsWith('+') ? lastOrder.phone : '+' + lastOrder.phone;
                 const boxNumber = `╔════════════════════╗\n║ 📱 \`${formatPhone}\`\n╚════════════════════╝`;
                 const platDisplay = `${getPlatIcon(lastOrder.plat)} ${lastOrder.plat.charAt(0).toUpperCase() + lastOrder.plat.slice(1)}`;
                 
+                // --- RESTORED OTP GROUP BROADCAST ---
                 const otpMarkup = { 
                     inline_keyboard: [
                         [{ text: ` ${otpCode}`, copy_text: { text: otpCode }, style: "success" }],
@@ -994,9 +1268,9 @@ bot.on('callback_query', async (query) => {
                     ] 
                 };
                 
-                // সাকসেস মেসেজ আগের ডিজাইনের সাথে ডাবল লাইনের বক্সসহ 
                 await bot.editMessageText(`📱 *Platform:* ${platDisplay}\n🌍 *Country:* ${lastOrder.country}\n\n${boxNumber}\n\n🎉 *Congratulations! Boss*\n✅ *OTP Code:* \`${otpCode}\``, { chat_id: chatId, message_id: countMsgId, parse_mode: 'Markdown', reply_markup: otpMarkup }).catch(()=>{});
                 
+                // Restored sending to Group Channel
                 const maskedPhone = maskNumber(lastOrder.phone);
                 const groupBoxNumber = `╔════════════════════╗\n║ 📱 \`${maskedPhone}\`\n╚════════════════════╝`;
                 const groupMarkup = { inline_keyboard: [[{ text: `  ${otpCode}`, copy_text: { text: otpCode }, style: "success" }]] };
@@ -1016,14 +1290,11 @@ Promise.all([loadApiKeys(), loadMkCookies()]).then(() => {
     // ==========================================
     // 🔄 MK NETWORK KEEP-ALIVE (Anti-Session Expire)
     // ==========================================
-    // এই ফাংশনটি প্রতি ১০ মিনিট পরপর MK সার্ভারে একটি সাইলেন্ট রিকোয়েস্ট পাঠাবে,
-    // যার ফলে ব্রাউজার বন্ধ থাকলেও সেশন (Cookie) কখনো এক্সপায়ার হবে না!
     setInterval(async () => {
         try {
             if (mkCookies && mkCookies.length > 10) {
                 const dateFilter = getMkDate();
                 await mkRequest('get_history', { filter: 'all', page: 1, limit: 1, date: dateFilter });
-                // console.log("🔄 MK Network Session Maintained.");
             }
         } catch (e) {
             // console.error("⚠️ MK Network Keep-Alive Error.");
@@ -1031,4 +1302,4 @@ Promise.all([loadApiKeys(), loadMkCookies()]).then(() => {
     }, 10 * 60 * 1000); // 10 Minutes
 });
 
-console.log("🚀 Premium Bulletproof Bot v9.9 (OTP Exact Extraction & UI Fixed) is Alive!");
+console.log("🚀 Premium Bulletproof Bot v10.1 (Account, Withdraw & Admin Added - Fixed) is Alive!");
