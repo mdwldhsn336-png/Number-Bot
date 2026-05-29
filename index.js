@@ -15,7 +15,7 @@ const PORT = process.env.PORT || 3000;
 const SERVER_URL = process.env.SERVER_URL; 
 
 app.use(express.json());
-app.get('/', (req, res) => res.send('Premium Fire OTP Bot v10.3 (UI Fixed) is Running!'));
+app.get('/', (req, res) => res.send('Premium Fire OTP Bot v10.4 (API Timeouts & MK Login Fixed) is Running!'));
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 
 // --- MongoDB Setup ---
@@ -72,9 +72,9 @@ const Withdraw = mongoose.model('Withdraw', WithdrawSchema);
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const ADMIN_ID = parseInt(process.env.ADMIN_ID);
 const OTP_GROUP_ID = "@otp_number_grp";
-const PAYMENT_GROUP_ID = "-1003925192534"; // Withdraw Requests Group
-const BASE_URL = 'http://63.141.255.227'; // Nexa API Base
-const NUMBER_EXPIRY_MS = 30 * 60 * 1000; // 30 minutes
+const PAYMENT_GROUP_ID = "-1003925192534"; 
+const BASE_URL = 'http://63.141.255.227'; 
+const NUMBER_EXPIRY_MS = 30 * 60 * 1000; 
 
 // --- Webhook vs Polling System ---
 let bot;
@@ -99,9 +99,9 @@ const activePolls = new Map();
 const deliveredOtps = new Set();
 
 // ==========================================
-// 🌐 MK NETWORK V3 SETUP (WITH AUTO-LOGIN)
+// 🌐 MK NETWORK V3 SETUP (POWERFUL AUTO-LOGIN)
 // ==========================================
-let mkCookies = process.env.MK_COOKIES || "PHPSESSID=ci4itr3sbltg20bpmst0tksv52; mk_remember=21dd02e264eeba74886d9d23%3Aab042c38088fb96c7dea474770d54308d976eab68aa391a16f48ba7198cec0c6";
+let mkCookies = process.env.MK_COOKIES || "";
 const MK_API_URL = "https://mknetworkbd.com/API/api_handler_test.php";
 
 async function loadMkCookies() {
@@ -118,19 +118,38 @@ async function saveMkCookies(cookie) {
     mkCookies = cookie;
 }
 
-// Auto Login Fallback
+// 🟢 NEW: Advanced MK Auto Login
 async function mkAutoLogin() {
     try {
         const credsDoc = await Setting.findOne({ key: 'mk_creds' });
-        if (!credsDoc || !credsDoc.data || !credsDoc.data.email) return false;
+        if (!credsDoc || !credsDoc.data || !credsDoc.data.email) {
+            console.log("⚠️ MK Credentials not set in Admin Panel.");
+            return false;
+        }
         
+        console.log("🔄 Attempting MK Auto-Login...");
+
+        // Step 1: Hit login page to get initial session cookie
+        const initRes = await axios.get('https://mknetworkbd.com/login.php', { validateStatus: () => true });
+        let initCookies = [];
+        if (initRes.headers['set-cookie']) {
+            initCookies = initRes.headers['set-cookie'].map(c => c.split(';')[0]);
+        }
+        const cookieHeader = initCookies.join('; ');
+
+        // Step 2: Post login credentials
         const params = new URLSearchParams();
         params.append('email', credsDoc.data.email);
         params.append('password', credsDoc.data.password);
-        
-        // Standard form login endpoint approximation for MK Network
+        params.append('submit', 'Login'); // Many PHP scripts require the submit button value
+
         const res = await axios.post('https://mknetworkbd.com/login.php', params.toString(), {
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            headers: { 
+                'Content-Type': 'application/x-www-form-urlencoded',
+                'Cookie': cookieHeader,
+                'Referer': 'https://mknetworkbd.com/login.php',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
+            },
             maxRedirects: 0,
             validateStatus: function (status) { return status >= 200 && status < 400; }
         });
@@ -139,22 +158,27 @@ async function mkAutoLogin() {
         if (res.headers['set-cookie']) {
             newCookies = res.headers['set-cookie'].map(c => c.split(';')[0]);
         }
-        if (newCookies.length > 0) {
-            const cookieStr = newCookies.join('; ');
-            await saveMkCookies(cookieStr);
+        
+        // Combine initial cookies with new logged-in cookies
+        const finalCookies = [...new Set([...initCookies, ...newCookies])].join('; ');
+
+        if (finalCookies.includes('mk_remember') || finalCookies.length > 20) {
+            await saveMkCookies(finalCookies);
+            console.log("✅ MK Auto-Login Successful!");
             return true;
         }
     } catch(e) {
         if (e.response && e.response.headers && e.response.headers['set-cookie']) {
             let newCookies = e.response.headers['set-cookie'].map(c => c.split(';')[0]);
             await saveMkCookies(newCookies.join('; '));
+            console.log("✅ MK Auto-Login Successful (via redirect catch)!");
             return true;
         }
+        console.error("❌ MK Auto-Login Failed:", e.message);
     }
     return false;
 }
 
-// আজকের লোকাল ডেট বের করার ফাংশন
 function getLocDate() {
     let today = new Date();
     let offset = today.getTimezoneOffset() * 60000;
@@ -179,25 +203,22 @@ async function mkRequest(action, extraParams = {}, isRetry = false) {
             const params = new URLSearchParams();
             params.append('action', 'get_number');
             for (let k in extraParams) params.append(k, extraParams[k]);
-            const res = await axios.post(MK_API_URL, params.toString(), { headers, timeout: 12000 });
+            const res = await axios.post(MK_API_URL, params.toString(), { headers, timeout: 15000 });
             resData = res.data;
         } else {
             let qs = `?action=${action}`;
             for (let k in extraParams) qs += `&${k}=${extraParams[k]}`;
-            const res = await axios.get(MK_API_URL + qs, { headers, timeout: 10000 });
+            const res = await axios.get(MK_API_URL + qs, { headers, timeout: 12000 });
             resData = res.data;
         }
 
-        // Auto-login trigger if session expired
         let isExpired = false;
         if (typeof resData === 'string' && resData.toLowerCase().includes('login')) isExpired = true;
         if (resData && resData.message && resData.message.toLowerCase().includes('expire')) isExpired = true;
 
         if (isExpired && !isRetry) {
             const loggedIn = await mkAutoLogin();
-            if (loggedIn) {
-                return await mkRequest(action, extraParams, true); // Retry once with new cookie
-            }
+            if (loggedIn) return await mkRequest(action, extraParams, true);
         }
         return resData;
 
@@ -233,7 +254,8 @@ async function saveApiKeys(keys) {
     apiKeys = keys;
 }
 
-async function apiRequest(method, url, data = null, timeout = 8000) {
+// 🟢 Increased Timeout for Nexa
+async function apiRequest(method, url, data = null, timeout = 25000) {
     let keysToTry = apiKeys.length > 0 ? apiKeys : (process.env.API_KEY ? [process.env.API_KEY] : []);
     if (keysToTry.length === 0) throw new Error("No API Key found");
 
@@ -251,6 +273,7 @@ async function apiRequest(method, url, data = null, timeout = 8000) {
             return res;
         } catch (err) {
             lastError = err;
+            console.error(`API Error on ${url}:`, err.message);
         }
     }
     throw lastError || new Error('All API keys failed');
@@ -388,24 +411,23 @@ function getAdminMenu() {
             [{ text: "🌐 Manage Sites", callback_data: "adm_sites", style: "primary" }, { text: "⚙️ Manage Ranges", callback_data: "adm_ranges", style: "primary" }],
             [{ text: "💰 API Balance", callback_data: "adm_balance", style: "primary" }, { text: "📊 Dashboard", callback_data: "adm_dash", style: "primary" }],
             [{ text: "📢 Broadcast", callback_data: "adm_broadcast", style: "primary" }, { text: "👥 Manage Users", callback_data: "adm_users", style: "primary" }],
-            [{ text: "📄 Download User List", callback_data: "adm_userlist", style: "success" }], // NEW TEXT FILE DOWNLOAD BUTTON
+            [{ text: "📄 Download User List", callback_data: "adm_userlist", style: "success" }],
             [{ text: "💳 Payment Settings", callback_data: "adm_paycfg", style: "success" }, { text: "🔑 Manage API Keys", callback_data: "adm_apikeys", style: "danger" }],
             [{ text: "🍪 MK Cookies", callback_data: "adm_mkcookie", style: "primary" }, { text: "📧 MK Auto Login Setup", callback_data: "adm_mklogin", style: "primary" }]
         ]
     };
 }
 
-// 🟢 NEW: Powerful OTP Extractor (Handles spaces, hyphens, and text)
 function extractOTP(msg) {
     if (!msg) return "Code Not Found";
     msg = String(msg).trim();
-    if (/^\d{4,8}$/.test(msg)) return msg; // Already clean
+    if (/^\d{4,8}$/.test(msg)) return msg; 
     const match = msg.match(/(?:\d[\s-]*){4,8}/);
     if (match && match[0]) {
-        let digits = match[0].replace(/\D/g, ''); // Remove spaces/hyphens
+        let digits = match[0].replace(/\D/g, ''); 
         if (digits.length >= 4 && digits.length <= 8) return digits;
     }
-    return msg; // Fallback to full text if nothing found
+    return msg; 
 }
 
 // --- Force Subscribe ---
@@ -455,7 +477,6 @@ bot.on('message', async (msg) => {
 
     const menuButtons = ["📱 GET NUMBER", "📥 INBOX", "📊 TRAFFIC", "🔐 2FA AUTHENTICATOR", "👤 ACCOUNT", "🎧 SUPPORT", "🛠️ ADMIN PANEL"];
     
-    // Clear states if menu button clicked
     if (menuButtons.some(btn => text.includes(btn))) {
         if(adminState[chatId]) delete adminState[chatId];
         if(userState[chatId]) delete userState[chatId];
@@ -488,7 +509,6 @@ bot.on('message', async (msg) => {
                     return bot.sendMessage(chatId, "❌ *Insufficient Balance!*", { parse_mode: 'Markdown' });
                 }
 
-                // Deduct balance and create request
                 userDoc.balance -= amount;
                 await userDoc.save();
 
@@ -504,7 +524,6 @@ bot.on('message', async (msg) => {
 
                 bot.sendMessage(chatId, `✅ *Withdraw Request Submitted!*\n\n💰 *Amount:* \`${amount}\` ৳\n💳 *Method:* ${state.method}\n\n_Please wait for admin approval._`, { parse_mode: 'Markdown' });
 
-                // Send to Payment Group
                 const wdGroupMsg = `🔔 *NEW WITHDRAW REQUEST*\n\n👤 *User ID:* \`${chatId}\`\n💳 *Method:* ${state.method}\n🏦 *Account/ID:* \`${state.account_id}\`\n💰 *Amount:* \`${amount}\` ৳\n\n_Select an action below:_`;
                 const wdMarkup = { inline_keyboard: [[
                     { text: "✅ Approve", callback_data: `wd_appr_${wd_id}`, style: "success" },
@@ -601,7 +620,6 @@ bot.on('message', async (msg) => {
             catch (e) { bot.sendMessage(chatId, "❌ Error saving cookie"); } 
             delete adminState[chatId]; return;
         }
-        // Admin: Auto Login Config
         else if (state.action === 'wait_mk_email') {
             state.email = text.trim();
             state.action = 'wait_mk_pass';
@@ -616,7 +634,6 @@ bot.on('message', async (msg) => {
             } catch(e) { bot.sendMessage(chatId, "❌ Setup Failed"); }
             delete adminState[chatId]; return;
         }
-        // Admin Payment Settings States
         else if (state.action === 'wait_otp_rate') {
             const val = parseFloat(text.trim());
             if(!isNaN(val) && val >= 0) {
@@ -642,7 +659,6 @@ bot.on('message', async (msg) => {
             }
             delete adminState[chatId]; return;
         }
-        // Admin User Manage State
         else if (state.action === 'wait_manage_userid') {
             const uid = text.trim();
             const targetUser = await User.findOne({ id: String(uid) });
@@ -688,7 +704,7 @@ bot.on('message', async (msg) => {
                 let finalOtp = '';
 
                 if (lastOrder.panel === 'nexa') {
-                    const res = await apiRequest('get', `${BASE_URL}/api/v1/numbers/${lastOrder.numId}/sms`, null, 5000);
+                    const res = await apiRequest('get', `${BASE_URL}/api/v1/numbers/${lastOrder.numId}/sms`, null, 15000);
                     if (res.data && res.data.success && res.data.otp) {
                         otpFound = true; finalOtp = extractOTP(res.data.otp);
                     }
@@ -773,7 +789,6 @@ bot.on('callback_query', async (query) => {
     const data = query.data;
     const msgId = query.message.message_id;
 
-    // --- Admin Approval for Withdraws (Payment Group logic) ---
     if (data.startsWith('wd_appr_') || data.startsWith('wd_canc_')) {
         if (query.from.id !== ADMIN_ID) {
             return bot.answerCallbackQuery(query.id, { text: "❌ Only Admin can do this!", show_alert: true });
@@ -795,7 +810,6 @@ bot.on('callback_query', async (query) => {
             } else {
                 reqDoc.status = 'rejected';
                 await reqDoc.save();
-                // Refund
                 const uDoc = await User.findOne({ id: reqDoc.user_id });
                 if (uDoc) { uDoc.balance += reqDoc.amount; await uDoc.save(); }
                 bot.editMessageText(query.message.text + "\n\n❌ *STATUS: REJECTED*", { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown' });
@@ -805,7 +819,6 @@ bot.on('callback_query', async (query) => {
         return bot.answerCallbackQuery(query.id);
     }
 
-    // Checking if user is banned
     const uCheck = await User.findOne({ id: String(chatId) });
     if(uCheck && uCheck.banned && chatId !== ADMIN_ID) {
         return bot.answerCallbackQuery(query.id, { text: "🚫 You are banned.", show_alert: true });
@@ -818,8 +831,6 @@ bot.on('callback_query', async (query) => {
                 bot.sendMessage(chatId, "✅ *Boss, এখন Number নিয়ে কাজ শুরু করে দিন।*", { parse_mode: 'Markdown', ...getMainMenu(chatId) });
             } else bot.answerCallbackQuery(query.id, { text: "⚠️ এখনও সব চ্যানেলে জয়েন করেননি!", show_alert: true });
         }
-        
-        // --- User: Withdrawal Flow ---
         else if (data === "wd_start") {
             const config = await getAppConfig();
             let methods = config.pay_methods || [];
@@ -839,8 +850,6 @@ bot.on('callback_query', async (query) => {
             bot.sendMessage(chatId, `✏️ *আপনার ${method} Account ID / Number দিন:*`, { parse_mode: 'Markdown' });
             bot.answerCallbackQuery(query.id);
         }
-
-        // --- Admin Menus ---
         else if (data === "admin_main" && chatId === ADMIN_ID) {
             bot.editMessageText("🛠 *Admin Control Panel*\n\nSelect an option below:", { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown', reply_markup: getAdminMenu() });
         }
@@ -860,15 +869,13 @@ bot.on('callback_query', async (query) => {
                 const gStats = statDoc && statDoc.data ? statDoc.data : { success: 0, pending: 0, failed: 0 };
                 let apiBal = "Loading...";
                 try {
-                    const balRes = await apiRequest('get', `${BASE_URL}/api/v1/balance`, null, 5000);
+                    const balRes = await apiRequest('get', `${BASE_URL}/api/v1/balance`, null, 15000);
                     if(balRes.data.success) apiBal = balRes.data.balance + " ৳";
                 } catch(e){ apiBal = "Error"; }
                 const dashText = `📊 *BOT DASHBOARD*\n\n💰 *API Balance:* \`${apiBal}\`\n👥 *Total Users:* \`${totalUsers}\`\n\n📈 *Order Stats:*\n✅ Success: \`${gStats.success || 0}\`\n⏳ Pending: \`${gStats.pending || 0}\`\n❌ Failed: \`${gStats.failed || 0}\``;
                 bot.editMessageText(dashText, { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: "🔙 Back", callback_data: "admin_main", style: "danger" }]] }});
             } catch (e) {}
         }
-
-        // --- Download User List (Text File) ---
         else if (data === "adm_userlist" && chatId === ADMIN_ID) {
             bot.answerCallbackQuery(query.id, { text: "⏳ Preparing user list..." });
             try {
@@ -881,8 +888,6 @@ bot.on('callback_query', async (query) => {
                 await bot.sendDocument(chatId, buffer, {}, { filename: 'users_list.txt', contentType: 'text/plain' });
             } catch (e) { bot.sendMessage(chatId, "⚠️ *Error generating user list.*", { parse_mode: 'Markdown' }); }
         }
-
-        // --- Admin: Payment Settings ---
         else if (data === "adm_paycfg" && chatId === ADMIN_ID) {
             const config = await getAppConfig();
             let msg = `💳 *Payment Settings*\n\n💰 *Per OTP Earning:* \`${config.per_otp_rate}\` ৳\n📉 *Min Withdraw:* \`${config.min_withdraw}\` ৳\n\n💳 *Methods:* ${config.pay_methods.join(', ') || 'None'}`;
@@ -918,8 +923,6 @@ bot.on('callback_query', async (query) => {
             await saveAppConfig(config);
             bot.editMessageText(`✅ Deleted '${m}'`, { chat_id: chatId, message_id: msgId, reply_markup: { inline_keyboard: [[{ text: "🔙 Back", callback_data: "adm_paycfg", style: "danger" }]] } });
         }
-
-        // --- Admin: User Management ---
         else if (data === "adm_users" && chatId === ADMIN_ID) {
             adminState[chatId] = { action: 'wait_manage_userid' };
             bot.sendMessage(chatId, "✏️ *Enter User ID to manage:*", { parse_mode: 'Markdown' });
@@ -935,8 +938,6 @@ bot.on('callback_query', async (query) => {
             }
             bot.answerCallbackQuery(query.id);
         }
-
-        // --- Admin Sites & Ranges (Existing) ---
         else if (data === "adm_sites" && chatId === ADMIN_ID) {
             const ranges = await loadRanges();
             let inlineKeyboard = [];
@@ -1096,16 +1097,14 @@ bot.on('callback_query', async (query) => {
         }
         else if (data === "del_mkcookie" && chatId === ADMIN_ID) {
             await Setting.deleteOne({ key: 'mk_cookies' }).catch(()=>{});
-            mkCookies = process.env.MK_COOKIES || "PHPSESSID=ci4itr3sbltg20bpmst0tksv52; mk_remember=21dd02e264eeba74886d9d23%3Aab042c38088fb96c7dea474770d54308d976eab68aa391a16f48ba7198cec0c6";
-            bot.editMessageText("✅ *MK Cookie deleted. Reverted to default.*", { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: "🔙 Back", callback_data: "adm_mkcookie", style: "danger" }]] } });
+            mkCookies = process.env.MK_COOKIES || "";
+            bot.editMessageText("✅ *MK Cookie deleted.*", { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: "🔙 Back", callback_data: "adm_mkcookie", style: "danger" }]] } });
         }
         else if (data === "adm_mklogin" && chatId === ADMIN_ID) {
             adminState[chatId] = { action: 'wait_mk_email' };
             bot.sendMessage(chatId, "📧 *Auto-Login Setup*\n\nদয়া করে MK Network এর *Email* লিখুন:", { parse_mode: 'Markdown' });
             bot.answerCallbackQuery(query.id);
         }
-
-        // --- 2FA Config ---
         else if (data === "add_2fa") {
             adminState[chatId] = { action: 'wait_2fa_secret' };
             bot.sendMessage(chatId, "✏️ *আপনার 2FA Secret Key টি পাঠান:*", { parse_mode: 'Markdown' });
@@ -1172,7 +1171,6 @@ bot.on('callback_query', async (query) => {
             bot.deleteMessage(chatId, msgId);
             const sentMsg = await bot.sendMessage(chatId, "🔄 *Initializing Request...*", { parse_mode: 'Markdown' });
             
-            // --- Premium Number Generating Animation ---
             const animFrames = [
                 "🔍 *Searching Server...*",
                 "📡 *Connecting to Panel...*",
@@ -1180,7 +1178,7 @@ bot.on('callback_query', async (query) => {
             ];
             for (let frame of animFrames) {
                 await bot.editMessageText(frame, { chat_id: chatId, message_id: sentMsg.message_id, parse_mode: 'Markdown' }).catch(()=>{});
-                await new Promise(r => setTimeout(r, 600)); // 600ms delay per frame
+                await new Promise(r => setTimeout(r, 600)); 
             }
             
             try {
@@ -1189,8 +1187,11 @@ bot.on('callback_query', async (query) => {
                 let finalPhone = null;
                 let apiErrorMsg = "❌ *এই মুহূর্তে এই কান্ট্রির কোনো নাম্বার স্টকে নেই।*";
                 
+                // 🟢 Nexa Range Cleaning Fix
+                const cleanRange = rangeVal.replace(/[^0-9Xx]/g, '');
+
                 if (panel === 'nexa') {
-                    const res = await apiRequest('post', `${BASE_URL}/api/v1/numbers/get`, { range: rangeVal, format: "international" }, 12000);
+                    const res = await apiRequest('post', `${BASE_URL}/api/v1/numbers/get`, { range: cleanRange, format: "international" }, 25000); // 25s timeout
                     if (res.data && res.data.success) {
                         success = true;
                         numId = res.data.number_id;
@@ -1239,12 +1240,13 @@ bot.on('callback_query', async (query) => {
                     bot.editMessageText(apiErrorMsg, { chat_id: chatId, message_id: sentMsg.message_id, parse_mode: 'Markdown' });
                 }
             } catch (error) { 
-                bot.editMessageText("⚠️ * সার্ভার রেসপন্স করছে না।*", { chat_id: chatId, message_id: sentMsg.message_id, parse_mode: 'Markdown' }); 
+                console.error("Nexa API Err:", error.message || error);
+                bot.editMessageText("⚠️ *সার্ভার রেসপন্স করছে না বা টাইমআউট হয়েছে।*", { chat_id: chatId, message_id: sentMsg.message_id, parse_mode: 'Markdown' }); 
             }
             bot.answerCallbackQuery(query.id);
         }
 
-        // --- Fetch OTP Logic (Seamless Multi-Panel + Regex Auto OTP Extraction) ---
+        // --- Fetch OTP Logic ---
         else if (data.startsWith('fetch_otp_')) {
             const numId = data.split('fetch_otp_')[1];
             const lastOrder = userLastOrder.get(chatId);
@@ -1253,7 +1255,7 @@ bot.on('callback_query', async (query) => {
                 bot.answerCallbackQuery(query.id, { text: "এই নাম্বারটি আর valid নয়।", show_alert: true });
                 return;
             }
-            if (Date.now() - lastOrder.createdAt > NUMBER_EXPIRY_MS) { /* omitted for brevity */ return; }
+            if (Date.now() - lastOrder.createdAt > NUMBER_EXPIRY_MS) { return; }
             if (deliveredOtps.has(numId)) { bot.answerCallbackQuery(query.id, { text: "OTP ইতিমধ্যেই ডেলিভার হয়েছে!", show_alert: true }); return; }
 
             bot.answerCallbackQuery(query.id);
@@ -1275,7 +1277,7 @@ bot.on('callback_query', async (query) => {
                 if (i % 2 === 0) {
                     try {
                         if (panel === 'nexa') {
-                            const res = await apiRequest('get', `${BASE_URL}/api/v1/numbers/${numId}/sms`, null, 5000);
+                            const res = await apiRequest('get', `${BASE_URL}/api/v1/numbers/${numId}/sms`, null, 15000);
                             if (res.data && res.data.success && res.data.otp) {
                                 otpFound = true; otpCode = extractOTP(res.data.otp);
                             }
@@ -1290,7 +1292,6 @@ bot.on('callback_query', async (query) => {
                                 
                                 if (matched && matched.status === 'success') {
                                     otpFound = true;
-                                    
                                     let smsText = "";
                                     if (matched.full_sms_list) {
                                         smsText = matched.full_sms_list.split('|||')[0];
@@ -1320,7 +1321,6 @@ bot.on('callback_query', async (query) => {
                 activePolls.delete(numId);
                 updateTraffic(lastOrder.plat, lastOrder.country);
                 
-                // 🟢 ONE-TIME EARNING LOGIC & CUSTOM SUCCESS MESSAGE
                 let earnedAmount = 0;
                 let isDuplicate = false;
 
@@ -1345,7 +1345,6 @@ bot.on('callback_query', async (query) => {
                     isDuplicate = true;
                 }
 
-                // Get updated balance to display
                 const updatedUser = await User.findOne({ id: String(chatId) });
                 let earningText = isDuplicate ? `⚠️ _Already paid for this number_` : `💰 *Earned:* \`${earnedAmount}\` ৳`;
                 earningText += `\n💳 *Total Balance:* \`${updatedUser.balance}\` ৳`;
@@ -1361,10 +1360,9 @@ bot.on('callback_query', async (query) => {
                     ] 
                 };
                 
-                // Final Success UI Message - OTP removed from body text, only in inline button
+                // 🟢 Fixed: OTP Text is only in the Button now
                 await bot.editMessageText(`📱 *Platform:* ${platDisplay}\n🌍 *Country:* ${lastOrder.country}\n\n${boxNumber}\n\n🎉 *Congratulations! Boss*\n${earningText}`, { chat_id: chatId, message_id: countMsgId, parse_mode: 'Markdown', reply_markup: otpMarkup }).catch(()=>{});
                 
-                // Send to Payment Group
                 const maskedPhone = maskNumber(lastOrder.phone);
                 const groupBoxNumber = `╔════════════════════╗\n║ 📱 \`${maskedPhone}\`\n╚════════════════════╝`;
                 const groupMarkup = { inline_keyboard: [[{ text: `  ${otpCode}`, copy_text: { text: otpCode }, style: "success" }]] };
@@ -1390,10 +1388,8 @@ Promise.all([loadApiKeys(), loadMkCookies()]).then(() => {
                 const dateFilter = getMkDate();
                 await mkRequest('get_history', { filter: 'all', page: 1, limit: 1, date: dateFilter });
             }
-        } catch (e) {
-            // Error handled silently
-        }
-    }, 10 * 60 * 1000); // 10 Minutes
+        } catch (e) {}
+    }, 10 * 60 * 1000); 
 });
 
-console.log("🚀 Premium Bulletproof Bot v10.3 (UI Fixed) is Alive!");
+console.log("🚀 Premium Bulletproof Bot v10.4 (API Timeouts & MK Login Fixed) is Alive!");
