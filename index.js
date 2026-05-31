@@ -72,7 +72,7 @@ const Withdraw = mongoose.model('Withdraw', WithdrawSchema);
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const ADMIN_ID = parseInt(process.env.ADMIN_ID);
 const OTP_GROUP_ID = "@otp_number_grp";
-const PAYMENT_GROUP_ID = "-1003925192534"; 
+const PAYMENT_GROUP_ID = "@walidotppay"; 
 const BASE_URL = 'http://63.141.255.227'; 
 const NUMBER_EXPIRY_MS = 30 * 60 * 1000; 
 
