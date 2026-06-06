@@ -15,7 +15,7 @@ const PORT = process.env.PORT || 3000;
 const SERVER_URL = process.env.SERVER_URL; 
 
 app.use(express.json());
-app.get('/', (req, res) => res.send('Premium Fire OTP Bot v10.7 (Auto-Login Removed, UI & Features Intact) is Running!'));
+app.get('/', (req, res) => res.send('Premium Fire OTP Bot v10.8 (Lang Detect & UI Overhaul) is Running!'));
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 
 // --- MongoDB Setup ---
@@ -48,7 +48,7 @@ const SettingSchema = new mongoose.Schema({
 });
 const Setting = mongoose.model('Setting', SettingSchema);
 
-// Earning History to prevent double payment for same number
+// Earning History
 const EarningSchema = new mongoose.Schema({
     user_id: String,
     num_id: String,
@@ -72,7 +72,7 @@ const Withdraw = mongoose.model('Withdraw', WithdrawSchema);
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const ADMIN_ID = parseInt(process.env.ADMIN_ID);
 const OTP_GROUP_ID = "@otp_number_grp";
-const PAYMENT_GROUP_ID = "@walidotppay"; 
+const PAYMENT_GROUP_ID = "-1003925192534"; 
 const BASE_URL = 'http://63.141.255.227'; 
 const NUMBER_EXPIRY_MS = 30 * 60 * 1000; 
 
@@ -99,7 +99,7 @@ const activePolls = new Map();
 const deliveredOtps = new Set();
 
 // ==========================================
-// 🌐 MK NETWORK V3 SETUP (COOKIES ONLY)
+// 🌐 MK NETWORK V3 SETUP
 // ==========================================
 let mkCookies = process.env.MK_COOKIES || ""; 
 const MK_API_URL = "https://mknetworkbd.com/API/api_handler_test.php";
@@ -135,7 +135,6 @@ async function mkRequest(action, extraParams = {}) {
         'Origin': 'https://mknetworkbd.com',
         'Referer': 'https://mknetworkbd.com/getnum_test.php'
     };
-    
     try {
         let resData;
         if (action === 'get_number') {
@@ -150,12 +149,8 @@ async function mkRequest(action, extraParams = {}) {
             const res = await axios.get(MK_API_URL + qs, { headers, timeout: 12000 });
             resData = res.data;
         }
-
         return resData;
-
-    } catch (e) {
-        throw e;
-    }
+    } catch (e) { throw e; }
 }
 
 // ==========================================
@@ -197,9 +192,7 @@ async function apiRequest(method, url, data = null, timeout = 25000) {
             }
             if (res.data && res.data.success !== false) return res;
             return res;
-        } catch (err) {
-            lastError = err;
-        }
+        } catch (err) { lastError = err; }
     }
     throw lastError || new Error('All API keys failed');
 }
@@ -338,7 +331,7 @@ function getAdminMenu() {
             [{ text: "📢 Broadcast", callback_data: "adm_broadcast", style: "primary" }, { text: "👥 Manage Users", callback_data: "adm_users", style: "primary" }],
             [{ text: "📄 Download User List", callback_data: "adm_userlist", style: "success" }],
             [{ text: "💳 Payment Settings", callback_data: "adm_paycfg", style: "success" }, { text: "🔑 Manage API Keys", callback_data: "adm_apikeys", style: "danger" }],
-            [{ text: "🍪 MK Cookies", callback_data: "adm_mkcookie", style: "primary" }] // 🟢 Email/Pass Auto Login Setup Removed
+            [{ text: "🍪 MK Cookies", callback_data: "adm_mkcookie", style: "primary" }]
         ]
     };
 }
@@ -353,6 +346,23 @@ function extractOTP(msg) {
         if (digits.length >= 4 && digits.length <= 8) return digits;
     }
     return msg; 
+}
+
+// 🟢 NEW: Language Detection Function
+function detectLang(text) {
+    if (!text) return 'English';
+    if (/[\u0400-\u04FF]/.test(text)) return 'Russian';
+    if (/[\u0600-\u06FF]/.test(text)) return 'Arabic';
+    if (/[\u0980-\u09FF]/.test(text)) return 'Bengali';
+    if (/[\u4E00-\u9FFF]/.test(text)) return 'Chinese';
+    if (/[\u0E00-\u0E7F]/.test(text)) return 'Thai';
+    if (/[\u0C00-\u0C7F]/.test(text)) return 'Telugu';
+    if (/[\u0900-\u097F]/.test(text)) return 'Hindi';
+    if (/[áéíóúñ¿¡]/.test(text.toLowerCase())) return 'Spanish';
+    if (/[àâäéèêëîïôöùûüçœ]/.test(text.toLowerCase())) return 'French';
+    if (/[äöüß]/.test(text.toLowerCase())) return 'German';
+    if (/[ãõáéíóúç]/.test(text.toLowerCase())) return 'Portuguese';
+    return 'English';
 }
 
 // --- Force Subscribe ---
@@ -381,6 +391,104 @@ async function checkForceSub(chatId) {
         return false;
     }
     return true;
+}
+
+// 🟢 NEW: Main logic extracted to cleanly handle Generate/Change/New Number
+async function generateNewNumber(chatId, plat, country, msgIdToEdit = null) {
+    const ranges = await loadRanges(); 
+    const rangeData = ranges[plat]?.[country];
+    
+    if (!rangeData) {
+        if (msgIdToEdit) bot.editMessageText("❌ *Error: Range not found.*", {chat_id: chatId, message_id: msgIdToEdit, parse_mode: 'Markdown'}).catch(()=>{});
+        else bot.sendMessage(chatId, "❌ *Error: Range not found.*", {parse_mode: 'Markdown'});
+        return;
+    }
+    
+    const rangeVal = typeof rangeData === 'string' ? rangeData : rangeData.range;
+    const panel = typeof rangeData === 'string' ? 'nexa' : rangeData.panel;
+
+    let sentMsg;
+    if (msgIdToEdit) {
+        sentMsg = { message_id: msgIdToEdit, chat: { id: chatId } };
+        await bot.editMessageText("🔄 *Initializing Request...*", { chat_id: chatId, message_id: msgIdToEdit, parse_mode: 'Markdown' }).catch(()=>{});
+    } else {
+        sentMsg = await bot.sendMessage(chatId, "🔄 *Initializing Request...*", { parse_mode: 'Markdown' });
+    }
+
+    const animFrames = [
+        "🔍 *Searching Server...*",
+        "📡 *Connecting to Panel...*",
+        "🚀 *Generating Number...*"
+    ];
+    for (let frame of animFrames) {
+        await bot.editMessageText(frame, { chat_id: chatId, message_id: sentMsg.message_id, parse_mode: 'Markdown' }).catch(()=>{});
+        await new Promise(r => setTimeout(r, 600)); 
+    }
+    
+    try {
+        let success = false;
+        let numId = null;
+        let finalPhone = null;
+        let apiErrorMsg = "❌ *এই মুহূর্তে এই কান্ট্রির কোনো নাম্বার স্টকে নেই।*";
+        
+        const cleanRange = rangeVal.replace(/[^0-9Xx]/g, '');
+
+        if (panel === 'nexa') {
+            const res = await apiRequest('post', `${BASE_URL}/api/v1/numbers/get`, { range: cleanRange, format: "international" }, 25000); 
+            if (res.data && res.data.success) {
+                success = true;
+                numId = res.data.number_id;
+                finalPhone = res.data.number;
+            }
+        } else if (panel === 'mk') {
+            const resData = await mkRequest('get_number', { range: rangeVal });
+            if (resData && resData.status === 'success') {
+                success = true;
+                finalPhone = resData.number;
+                
+                const dateFilter = getMkDate();
+                const hist = await mkRequest('get_history', { filter: 'all', page: 1, limit: 15, date: dateFilter });
+                if (hist && Array.isArray(hist.data)) {
+                    const phoneDigits = finalPhone.replace(/\D/g,'');
+                    const matched = hist.data.find(o => o.phone_number && o.phone_number.replace(/\D/g,'').includes(phoneDigits));
+                    if (matched) numId = matched.id;
+                }
+                if (!numId) numId = finalPhone; 
+            } else if (resData && resData.message) {
+                apiErrorMsg = `⚠️ *MK Server:* ${resData.message}`;
+            }
+        }
+
+        if (success) {
+            const createdAt = Date.now();
+            userLastOrder.set(chatId, { numId: numId, phone: finalPhone, plat, country, createdAt, msgId: sentMsg.message_id, panel: panel });
+            updateUserStat(chatId, 'number');
+            updateGlobalStats('pending');
+            
+            const formatPhone = finalPhone.startsWith('+') ? finalPhone : '+' + finalPhone;
+            // No language detected yet, keeping regular box
+            const boxNumber = `╔════════════════════╗\n║ 📱 \`Wait for OTP...\`\n╚════════════════════╝`;
+            const platDisplay = `${getPlatIcon(plat)} ${plat.charAt(0).toUpperCase() + plat.slice(1)}`;
+            
+            const text = `📱 *Platform:* ${platDisplay}\n🌍 *Country:* ${country}\n\n${boxNumber}`;
+            
+            const actionMarkup = { 
+                inline_keyboard: [
+                    [{ text: `📱 ${formatPhone}`, copy_text: { text: formatPhone }, style: "primary" }], // 🟢 Number Copy Button
+                    [
+                        { text: "🔁 Change Number", callback_data: "change_num", style: "danger" },
+                        { text: "🔄 Fetch OTP", callback_data: `fetch_otp_${numId}`, style: "success" }
+                    ]
+                ] 
+            };
+            bot.editMessageText(text, { chat_id: chatId, message_id: sentMsg.message_id, parse_mode: 'Markdown', reply_markup: actionMarkup }).catch(()=>{});
+            activePolls.set(numId, true);
+        } else {
+            bot.editMessageText(apiErrorMsg, { chat_id: chatId, message_id: sentMsg.message_id, parse_mode: 'Markdown' }).catch(()=>{});
+        }
+    } catch (error) { 
+        bot.editMessageText("⚠️ *সার্ভার রেসপন্স করছে না বা টাইমআউট হয়েছে।*", { chat_id: chatId, message_id: sentMsg.message_id, parse_mode: 'Markdown' }).catch(()=>{}); 
+    }
 }
 
 // --- Commands & Messages ---
@@ -613,11 +721,14 @@ bot.on('message', async (msg) => {
             try {
                 let otpFound = false;
                 let finalOtp = '';
+                let fullSmsText = '';
 
                 if (lastOrder.panel === 'nexa') {
                     const res = await apiRequest('get', `${BASE_URL}/api/v1/numbers/${lastOrder.numId}/sms`, null, 15000);
                     if (res.data && res.data.success && res.data.otp) {
-                        otpFound = true; finalOtp = extractOTP(res.data.otp);
+                        otpFound = true; 
+                        finalOtp = extractOTP(res.data.otp);
+                        fullSmsText = res.data.otp;
                     }
                 } else if (lastOrder.panel === 'mk') {
                     await mkRequest('check_otp').catch(()=>{});
@@ -630,12 +741,11 @@ bot.on('message', async (msg) => {
                         
                         if (matched && matched.status === 'success') {
                             otpFound = true;
-                            let smsText = "";
-                            if (matched.full_sms_list) smsText = matched.full_sms_list.split('|||')[0];
-                            else if (matched.full_sms) smsText = matched.full_sms;
-                            else if (matched.otps) smsText = matched.otps.split('|||')[0];
+                            if (matched.full_sms_list) fullSmsText = matched.full_sms_list.split('|||')[0];
+                            else if (matched.full_sms) fullSmsText = matched.full_sms;
+                            else if (matched.otps) fullSmsText = matched.otps.split('|||')[0];
                             
-                            finalOtp = extractOTP(smsText);
+                            finalOtp = extractOTP(fullSmsText);
                             if (finalOtp.toLowerCase() === 'your' || finalOtp.trim() === '') finalOtp = "Code Not Found";
                         }
                     }
@@ -643,7 +753,8 @@ bot.on('message', async (msg) => {
 
                 if (otpFound) {
                     const formatPhone = lastOrder.phone.startsWith('+') ? lastOrder.phone : '+' + lastOrder.phone;
-                    const boxNumber = `╔════════════════════╗\n║ 📱 \`${formatPhone}\`\n╚════════════════════╝`;
+                    let detectedLang = detectLang(fullSmsText);
+                    const boxNumber = `╔════════════════════╗\n║ 📱 \`${formatPhone}\` ║ LN- ${detectedLang}\n╚════════════════════╝`;
                     const platDisplay = `${getPlatIcon(lastOrder.plat)} ${lastOrder.plat.charAt(0).toUpperCase() + lastOrder.plat.slice(1)}`;
                     const replyMarkup = { 
                         inline_keyboard: [
@@ -1013,7 +1124,7 @@ bot.on('callback_query', async (query) => {
         else if (data === "del_mkcookie" && chatId === ADMIN_ID) {
             await Setting.deleteOne({ key: 'mk_cookies' }).catch(()=>{});
             mkCookies = "";
-            bot.editMessageText("✅ *MK Cookie deleted.*", { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: "🔙 Back", callback_data: "adm_mkcookie", style: "danger" }]] } });
+            bot.editMessageText("✅ *MK Cookie deleted. Reverted to default.*", { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: "🔙 Back", callback_data: "adm_mkcookie", style: "danger" }]] } });
         }
         else if (data === "add_2fa") {
             adminState[chatId] = { action: 'wait_2fa_secret' };
@@ -1040,25 +1151,7 @@ bot.on('callback_query', async (query) => {
             bot.answerCallbackQuery(query.id);
         }
 
-        // --- User: Get Number Flow ---
-        else if (data === "change_num") {
-            const lastOrder = userLastOrder.get(chatId);
-            if (lastOrder && activePolls.has(lastOrder.numId)) {
-                activePolls.delete(lastOrder.numId);
-                updateGlobalStats('failed');
-            }
-            bot.editMessageText("❌ *Number Cancelled.*", { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown' }).catch(()=>{});
-            const ranges = await loadRanges();
-            let inlineKeyboard = []; let row = [];
-            for (const [plat, countries] of Object.entries(ranges)) {
-                if (Object.keys(countries).length > 0) {
-                    row.push({ text: `${getPlatIcon(plat)} ${plat.toUpperCase()}`, callback_data: `u_site_${plat}`, style: "primary" });
-                    if (row.length === 2) { inlineKeyboard.push(row); row = []; }
-                }
-            }
-            if (row.length > 0) inlineKeyboard.push(row);
-            bot.sendMessage(chatId, "📌 *Select a New Platform:*", { parse_mode: 'Markdown', reply_markup: { inline_keyboard: inlineKeyboard } });
-        }
+        // --- User: Get Number Flow Refactored ---
         else if (data.startsWith('u_site_')) {
             const plat = data.split('u_site_')[1];
             const ranges = await loadRanges();
@@ -1070,89 +1163,48 @@ bot.on('callback_query', async (query) => {
             if (row.length > 0) inlineKeyboard.push(row);
             bot.editMessageText(`📌 *Select Country for ${getPlatIcon(plat)} ${plat.toUpperCase()}:*`, { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown', reply_markup: { inline_keyboard: inlineKeyboard }});
         }
+        
         else if (data.startsWith('u_cntry_')) {
             const parts = data.split('_'); const plat = parts[2]; const country = parts.slice(3).join('_');
-            const ranges = await loadRanges(); 
-            const rangeData = ranges[plat][country];
-            
-            const rangeVal = typeof rangeData === 'string' ? rangeData : rangeData.range;
-            const panel = typeof rangeData === 'string' ? 'nexa' : rangeData.panel;
-
-            bot.deleteMessage(chatId, msgId);
-            const sentMsg = await bot.sendMessage(chatId, "🔄 *Initializing Request...*", { parse_mode: 'Markdown' });
-            
-            const animFrames = [
-                "🔍 *Searching Server...*",
-                "📡 *Connecting to Panel...*",
-                "🚀 *Generating Number...*"
-            ];
-            for (let frame of animFrames) {
-                await bot.editMessageText(frame, { chat_id: chatId, message_id: sentMsg.message_id, parse_mode: 'Markdown' }).catch(()=>{});
-                await new Promise(r => setTimeout(r, 600)); 
+            bot.deleteMessage(chatId, msgId).catch(()=>{});
+            await generateNewNumber(chatId, plat, country, null);
+            bot.answerCallbackQuery(query.id);
+        }
+        
+        // 🟢 FIX 2: Change Number instantly generates a new one
+        else if (data === "change_num") {
+            const lastOrder = userLastOrder.get(chatId);
+            if (lastOrder && activePolls.has(lastOrder.numId)) {
+                activePolls.delete(lastOrder.numId);
+                updateGlobalStats('failed');
             }
-            
-            try {
-                let success = false;
-                let numId = null;
-                let finalPhone = null;
-                let apiErrorMsg = "❌ *এই মুহূর্তে এই কান্ট্রির কোনো নাম্বার স্টকে নেই।*";
-                
-                const cleanRange = rangeVal.replace(/[^0-9Xx]/g, '');
-
-                if (panel === 'nexa') {
-                    const res = await apiRequest('post', `${BASE_URL}/api/v1/numbers/get`, { range: cleanRange, format: "international" }, 25000); // 25s timeout
-                    if (res.data && res.data.success) {
-                        success = true;
-                        numId = res.data.number_id;
-                        finalPhone = res.data.number;
-                    }
-                } else if (panel === 'mk') {
-                    const resData = await mkRequest('get_number', { range: rangeVal });
-                    if (resData && resData.status === 'success') {
-                        success = true;
-                        finalPhone = resData.number;
-                        
-                        const dateFilter = getMkDate();
-                        const hist = await mkRequest('get_history', { filter: 'all', page: 1, limit: 15, date: dateFilter });
-                        if (hist && Array.isArray(hist.data)) {
-                            const phoneDigits = finalPhone.replace(/\D/g,'');
-                            const matched = hist.data.find(o => o.phone_number && o.phone_number.replace(/\D/g,'').includes(phoneDigits));
-                            if (matched) numId = matched.id;
-                        }
-                        if (!numId) numId = finalPhone; 
-                    } else if (resData && resData.message) {
-                        apiErrorMsg = `⚠️ *MK Server:* ${resData.message}`;
-                    }
-                }
-
-                if (success) {
-                    const createdAt = Date.now();
-                    userLastOrder.set(chatId, { numId: numId, phone: finalPhone, plat, country, createdAt, msgId: sentMsg.message_id, panel: panel });
-                    updateUserStat(chatId, 'number');
-                    updateGlobalStats('pending');
-                    
-                    const formatPhone = finalPhone.startsWith('+') ? finalPhone : '+' + finalPhone;
-                    const boxNumber = `╔════════════════════╗\n║ 📱 \`${formatPhone}\`\n╚════════════════════╝`;
-                    const platDisplay = `${getPlatIcon(plat)} ${plat.charAt(0).toUpperCase() + plat.slice(1)}`;
-                    
-                    const text = `📱 *Platform:* ${platDisplay}\n🌍 *Country:* ${country}\n\n${boxNumber}`;
-                    
-                    const actionMarkup = { 
-                        inline_keyboard: [[
-                            { text: "🔁 Change Number", callback_data: "change_num", style: "danger" },
-                            { text: "🔄 Fetch OTP", callback_data: `fetch_otp_${numId}`, style: "success" }
-                        ]] 
-                    };
-                    bot.editMessageText(text, { chat_id: chatId, message_id: sentMsg.message_id, parse_mode: 'Markdown', reply_markup: actionMarkup });
-                    activePolls.set(numId, true);
-                } else {
-                    bot.editMessageText(apiErrorMsg, { chat_id: chatId, message_id: sentMsg.message_id, parse_mode: 'Markdown' });
-                }
-            } catch (error) { 
-                console.error("Nexa API Err:", error.message || error);
-                bot.editMessageText("⚠️ *সার্ভার রেসপন্স করছে না বা টাইমআউট হয়েছে।*", { chat_id: chatId, message_id: sentMsg.message_id, parse_mode: 'Markdown' }); 
+            if (lastOrder) {
+                await bot.editMessageText("❌ *Number Cancelled. Generating New...*", { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown' }).catch(()=>{});
+                await generateNewNumber(chatId, lastOrder.plat, lastOrder.country, msgId);
+            } else {
+                bot.editMessageText("❌ *Session Expired. Start again.*", { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown' }).catch(()=>{});
             }
             bot.answerCallbackQuery(query.id);
+        }
+        
+        // 🟢 FIX 5: Get New Number (From Inbox)
+        else if (data === "get_new_num") {
+            const lastOrder = userLastOrder.get(chatId);
+            if (lastOrder) {
+                await generateNewNumber(chatId, lastOrder.plat, lastOrder.country, null);
+            } else {
+                bot.sendMessage(chatId, "⚠️ Session expired, please go to GET NUMBER again.");
+            }
+            bot.answerCallbackQuery(query.id);
+        }
+        
+        // 🟢 FIX 5: Get New Number (From Group)
+        else if (data.startsWith('gnew_')) {
+            const parts = data.split('_'); const plat = parts[1]; const country = parts.slice(2).join('_');
+            bot.answerCallbackQuery(query.id, { text: "Generating new number in your inbox...", show_alert: false });
+            generateNewNumber(query.from.id, plat, country, null).catch(e => {
+                // If user hasn't started the bot yet
+            });
         }
 
         // --- Fetch OTP Logic ---
@@ -1178,6 +1230,7 @@ bot.on('callback_query', async (query) => {
 
             let otpFound = false;
             let otpCode = '';
+            let fullSmsText = '';
             const panel = lastOrder.panel || 'nexa';
             
             for (let i = 10; i >= 1; i--) {
@@ -1188,7 +1241,9 @@ bot.on('callback_query', async (query) => {
                         if (panel === 'nexa') {
                             const res = await apiRequest('get', `${BASE_URL}/api/v1/numbers/${numId}/sms`, null, 15000);
                             if (res.data && res.data.success && res.data.otp) {
-                                otpFound = true; otpCode = extractOTP(res.data.otp);
+                                otpFound = true; 
+                                otpCode = extractOTP(res.data.otp);
+                                fullSmsText = res.data.otp;
                             }
                         } else if (panel === 'mk') {
                             await mkRequest('check_otp').catch(()=>{});
@@ -1201,16 +1256,11 @@ bot.on('callback_query', async (query) => {
                                 
                                 if (matched && matched.status === 'success') {
                                     otpFound = true;
-                                    let smsText = "";
-                                    if (matched.full_sms_list) {
-                                        smsText = matched.full_sms_list.split('|||')[0];
-                                    } else if (matched.full_sms) {
-                                        smsText = matched.full_sms;
-                                    } else if (matched.otps) {
-                                        smsText = matched.otps.split('|||')[0];
-                                    }
-
-                                    otpCode = extractOTP(smsText);
+                                    if (matched.full_sms_list) fullSmsText = matched.full_sms_list.split('|||')[0];
+                                    else if (matched.full_sms) fullSmsText = matched.full_sms;
+                                    else if (matched.otps) fullSmsText = matched.otps.split('|||')[0];
+                                    
+                                    otpCode = extractOTP(fullSmsText);
                                     if (otpCode.toLowerCase() === 'your' || otpCode.trim() === '') {
                                         otpCode = "Code Not Found (Check SMS)";
                                     }
@@ -1259,21 +1309,39 @@ bot.on('callback_query', async (query) => {
                 earningText += `\n💳 *Total Balance:* \`${parseFloat(updatedUser.balance.toFixed(2))}\` ৳`;
 
                 const formatPhone = lastOrder.phone.startsWith('+') ? lastOrder.phone : '+' + lastOrder.phone;
-                const boxNumber = `╔════════════════════╗\n║ 📱 \`${formatPhone}\`\n╚════════════════════╝`;
                 const platDisplay = `${getPlatIcon(lastOrder.plat)} ${lastOrder.plat.charAt(0).toUpperCase() + lastOrder.plat.slice(1)}`;
                 
+                // 🟢 FIX 1: Language Detection Box Formatting
+                let detectedLang = detectLang(fullSmsText);
+                const boxNumber = `╔════════════════════╗\n║ 📱 \`${formatPhone}\` ║ LN- ${detectedLang}\n╚════════════════════╝`;
+                
+                // 🟢 FIX 4: Delete Countdown Message
+                bot.deleteMessage(chatId, countMsgId).catch(()=>{});
+                
+                // User Inbox Success Buttons
                 const otpMarkup = { 
                     inline_keyboard: [
                         [{ text: ` ${otpCode}`, copy_text: { text: otpCode }, style: "success" }],
-                        [{ text: "💬 OTP Group", url: `https://t.me/${OTP_GROUP_ID.replace('@', '')}`, style: "primary" }]
+                        [
+                            { text: "🔄 Get New Number", callback_data: "get_new_num", style: "success" },
+                            { text: "💬 OTP Group", url: `https://t.me/${OTP_GROUP_ID.replace('@', '')}`, style: "primary" }
+                        ]
                     ] 
                 };
                 
-                await bot.editMessageText(`📱 *Platform:* ${platDisplay}\n🌍 *Country:* ${lastOrder.country}\n\n${boxNumber}\n\n🎉 *Congratulations! Boss*\n${earningText}`, { chat_id: chatId, message_id: countMsgId, parse_mode: 'Markdown', reply_markup: otpMarkup }).catch(()=>{});
+                // Send Fresh Message to User
+                await bot.sendMessage(chatId, `📱 *Platform:* ${platDisplay}\n🌍 *Country:* ${lastOrder.country}\n\n${boxNumber}\n\n🎉 *Congratulations! Boss*\n${earningText}`, { parse_mode: 'Markdown', reply_markup: otpMarkup }).catch(()=>{});
                 
+                // Group Channel Success Message
                 const maskedPhone = maskNumber(lastOrder.phone);
-                const groupBoxNumber = `╔════════════════════╗\n║ 📱 \`${maskedPhone}\`\n╚════════════════════╝`;
-                const groupMarkup = { inline_keyboard: [[{ text: `  ${otpCode}`, copy_text: { text: otpCode }, style: "success" }]] };
+                const groupBoxNumber = `╔════════════════════╗\n║ 📱 \`${maskedPhone}\` ║ LN- ${detectedLang}\n╚════════════════════╝`;
+                
+                const groupMarkup = { 
+                    inline_keyboard: [
+                        [{ text: `  ${otpCode}`, copy_text: { text: otpCode }, style: "success" }],
+                        [{ text: "🔄 Get New Number", callback_data: `gnew_${lastOrder.plat}_${lastOrder.country}`, style: "primary" }]
+                    ] 
+                };
                 bot.sendMessage(OTP_GROUP_ID, `📱 *Platform:* ${platDisplay}\n🌍 *Country:* ${lastOrder.country}\n\n${groupBoxNumber}`, { parse_mode: 'Markdown', reply_markup: groupMarkup }).catch(()=>{});
             
             } else {
@@ -1288,7 +1356,7 @@ Promise.all([loadApiKeys(), loadMkCookies()]).then(() => {
     console.log("🔑 API & MK Cookies loaded from MongoDB.");
     
     // ==========================================
-    // 🔄 MK NETWORK KEEP-ALIVE (Anti-Session Expire - Fixed!)
+    // 🔄 MK NETWORK KEEP-ALIVE
     // ==========================================
     setInterval(async () => {
         try {
@@ -1300,4 +1368,4 @@ Promise.all([loadApiKeys(), loadMkCookies()]).then(() => {
     }, 3 * 60 * 1000); 
 });
 
-console.log("🚀 Premium Bulletproof Bot v10.7 (Auto-Login Removed, UI & Features Intact) is Alive!");
+console.log("🚀 Premium Bulletproof Bot v10.8 (Lang Detect & UI Overhaul) is Alive!");
