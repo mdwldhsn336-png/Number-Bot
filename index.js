@@ -15,7 +15,7 @@ const PORT = process.env.PORT || 3000;
 const SERVER_URL = process.env.SERVER_URL; 
 
 app.use(express.json());
-app.get('/', (req, res) => res.send('Premium Fire OTP Bot v11.2 (Ultra Fast & API Reveal) is Running!'));
+app.get('/', (req, res) => res.send('Premium Fire OTP Bot v11.3 (Max Timeout & Deep Bug Fix) is Running!'));
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 
 // --- MongoDB Setup ---
@@ -132,7 +132,8 @@ function getLocDate() {
 }
 const getMkDate = getLocDate; 
 
-async function mkRequest(action, extraParams = {}) {
+// 🟢 MK Request with dynamic timeout
+async function mkRequest(action, extraParams = {}, isRetry = false, customTimeout = null) {
     const headers = {
         'Cookie': mkCookies,
         'Content-Type': 'application/x-www-form-urlencoded',
@@ -148,7 +149,8 @@ async function mkRequest(action, extraParams = {}) {
             const params = new URLSearchParams();
             params.append('action', 'get_number');
             for (let k in extraParams) params.append(k, extraParams[k]);
-            const res = await axios.post(MK_API_URL, params.toString(), { headers, timeout: 15000 });
+            const reqTimeout = customTimeout || 45000; // Default 45s for get_number
+            const res = await axios.post(MK_API_URL, params.toString(), { headers, timeout: reqTimeout });
             resData = res.data;
         } else {
             let qs = `?action=${action}`;
@@ -183,7 +185,8 @@ async function saveApiKeys(keys) {
     apiKeys = keys;
 }
 
-async function apiRequest(method, url, data = null, timeout = 25000) {
+// 🟢 Dynamic Timeout for Nexa
+async function apiRequest(method, url, data = null, customTimeout = 25000) {
     let keysToTry = apiKeys.length > 0 ? apiKeys : (process.env.API_KEY ? [process.env.API_KEY] : []);
     if (keysToTry.length === 0) throw new Error("No API Key found");
 
@@ -193,9 +196,9 @@ async function apiRequest(method, url, data = null, timeout = 25000) {
             const headers = { 'X-API-Key': key };
             let res;
             if (method === 'get') {
-                res = await axios.get(url, { headers, timeout });
+                res = await axios.get(url, { headers, timeout: customTimeout });
             } else if (method === 'post') {
-                res = await axios.post(url, data, { headers, timeout });
+                res = await axios.post(url, data, { headers, timeout: customTimeout });
             }
             if (res.data && res.data.success !== false) return res;
             return res;
@@ -401,7 +404,7 @@ async function checkForceSub(chatId) {
     return true;
 }
 
-// 🟢 Process OTP Success Action (Creates NEW message)
+// 🟢 Process OTP Success Action
 async function handleOtpSuccess(order, otpCode, fullSmsText) {
     if (deliveredOtps.has(order.numId)) return;
     deliveredOtps.add(order.numId);
@@ -485,9 +488,9 @@ async function handleOtpSuccess(order, otpCode, fullSmsText) {
     bot.sendMessage(OTP_GROUP_ID, groupFinalText, { parse_mode: 'Markdown', reply_markup: groupMarkup }).catch(()=>{});
 }
 
-// 🟢 Super Fast Background Silent Polling
+// 🟢 Background Silent Polling
 async function startSilentPolling(numId) {
-    const pollInterval = 4000; // 4 seconds delay to avoid API block
+    const pollInterval = 4000; 
     const maxDuration = NUMBER_EXPIRY_MS;
 
     const checkTask = async () => {
@@ -507,9 +510,7 @@ async function startSilentPolling(numId) {
             if (currentOrder.panel === 'nexa') {
                 const res = await apiRequest('get', `${BASE_URL}/api/v1/numbers/${numId}/sms`, null, 15000);
                 if (res.data && res.data.success && res.data.otp) {
-                    otpFound = true; 
-                    otpCode = extractOTP(res.data.otp);
-                    fullSmsText = res.data.otp;
+                    otpFound = true; otpCode = extractOTP(res.data.otp); fullSmsText = res.data.otp;
                 }
             } else if (currentOrder.panel === 'mk') {
                 await mkRequest('check_otp').catch(()=>{});
@@ -524,9 +525,7 @@ async function startSilentPolling(numId) {
                         else if (matched.full_sms) fullSmsText = matched.full_sms;
                         else if (matched.otps) fullSmsText = matched.otps.split('|||')[0];
                         otpCode = extractOTP(fullSmsText);
-                        if (otpCode.toLowerCase() === 'your' || otpCode.trim() === '') {
-                            otpCode = "Code Not Found (Check SMS)";
-                        }
+                        if (otpCode.toLowerCase() === 'your' || otpCode.trim() === '') otpCode = "Code Not Found (Check SMS)";
                     }
                 }
             }
@@ -544,7 +543,6 @@ async function startSilentPolling(numId) {
     };
     checkTask(); 
 }
-
 
 // 🟢 Manual OTP Fetch (For Inbox / fallback)
 async function processOtpFetch(chatId, numId, msgId, queryId = null) {
@@ -626,7 +624,7 @@ async function processOtpFetch(chatId, numId, msgId, queryId = null) {
     }
 }
 
-// 🟢 SUPER FAST Number Generation & Smart Error Handling
+// 🟢 SUPER FAST Number Generation & Fix For Range Bugs
 async function generateNewNumber(chatId, plat, country, msgIdToEdit = null) {
     const ranges = await loadRanges(); 
     const rangeData = ranges[plat]?.[country];
@@ -655,18 +653,20 @@ async function generateNewNumber(chatId, plat, country, msgIdToEdit = null) {
         let isSessionError = false;
         let apiErrorMsg = "প্যানেলে নাম্বার স্টকে নেই বা লিমিট শেষ।";
         
-        // Remove spaces and hashes
-        const cleanRange = rangeVal.replace(/[^0-9Xx]/gi, '');
+        // 🟢 FIX: Ensure string to avoid crash, safely remove hashes/spaces
+        const cleanRange = String(rangeVal).replace(/[^0-9Xx]/gi, '');
 
         if (panel === 'nexa') {
-            const res = await apiRequest('post', `${BASE_URL}/api/v1/numbers/get`, { range: cleanRange, format: "international" }, 25000); 
+            // 🟢 FIX: 45 SECONDS TIMEOUT!
+            const res = await apiRequest('post', `${BASE_URL}/api/v1/numbers/get`, { range: cleanRange, format: "international" }, 45000); 
             if (res.data && res.data.success) {
                 success = true; numId = res.data.number_id; finalPhone = res.data.number;
             } else if (res.data && res.data.message) {
                 apiErrorMsg = res.data.message;
             }
         } else if (panel === 'mk') {
-            const resData = await mkRequest('get_number', { range: cleanRange });
+            // 🟢 FIX: 45 SECONDS TIMEOUT!
+            const resData = await mkRequest('get_number', { range: cleanRange }, false, 45000);
             if (resData && resData.status === 'success') {
                 success = true; finalPhone = resData.number;
                 const dateFilter = getMkDate();
@@ -721,6 +721,7 @@ async function generateNewNumber(chatId, plat, country, msgIdToEdit = null) {
             }
 
         } else {
+            // 🟢 SHOW ACTUAL ERROR REASON
             let errorText = `❌ *তোর কপাল খারাফ রে, Number নাই, আবার চেষ্টা কর 🥲*\n\n⚠️ *Reason:* \`${apiErrorMsg}\``;
             let replyMarkup = undefined;
             if (isSessionError) {
@@ -730,11 +731,17 @@ async function generateNewNumber(chatId, plat, country, msgIdToEdit = null) {
             bot.editMessageText(errorText, { chat_id: chatId, message_id: sentMsg.message_id, parse_mode: 'Markdown', reply_markup: replyMarkup }).catch(()=>{});
         }
     } catch (error) { 
-        bot.editMessageText("❌ *তোর কপাল খারাফ রে, Number নাই, আবার চেষ্টা কর 🥲*\n\n⚠️ *Reason:* `সার্ভার স্লো বা টাইমআউট!`", { chat_id: chatId, message_id: sentMsg.message_id, parse_mode: 'Markdown' }).catch(()=>{}); 
+        // 🟢 CATCH BLOCK ERROR REVEAL
+        console.error("Number Gen Err:", error.message || error);
+        let errMsg = error.message || "অজানা ত্রুটি";
+        if (errMsg.includes('timeout') || errMsg.includes('aborted')) errMsg = "সার্ভার রেসপন্স দিতে অনেক সময় নিচ্ছে (টাইমআউট)।";
+        else if (errMsg.includes('404')) errMsg = "সার্ভার বা API লিংক ভুল (404)।";
+        else if (errMsg.includes('500')) errMsg = "প্যানেলের সার্ভারে সমস্যা (500)।";
+        
+        bot.editMessageText(`❌ *তোর কপাল খারাফ রে, Number নাই, আবার চেষ্টা কর 🥲*\n\n⚠️ *Reason:* \`${errMsg}\``, { chat_id: chatId, message_id: sentMsg.message_id, parse_mode: 'Markdown' }).catch(()=>{}); 
     }
 }
 
-// Admin Cancel State Helper
 function getCancelMarkup() {
     return { inline_keyboard: [[{ text: "🔙 Cancel / Back", callback_data: "adm_cancel_state", style: "danger" }]] };
 }
@@ -777,7 +784,7 @@ bot.on('message', async (msg) => {
         if(userState[chatId]) delete userState[chatId];
     }
     
-    // --- USER STATE MACHINE (Withdrawals) ---
+    // --- USER STATE MACHINE ---
     if (userState[chatId]) {
         const state = userState[chatId];
         
@@ -1458,4 +1465,4 @@ Promise.all([loadApiKeys(), loadMkCookies()]).then(() => {
     }, 3 * 60 * 1000); 
 });
 
-console.log("🚀 Premium Bulletproof Bot v11.2 (Ultra Fast & API Reveal) is Alive!");
+console.log("🚀 Premium Bulletproof Bot v11.3 (Max Timeout & Deep Bug Fix) is Alive!");
