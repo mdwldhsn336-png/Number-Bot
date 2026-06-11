@@ -15,7 +15,7 @@ const PORT = process.env.PORT || 3000;
 const SERVER_URL = process.env.SERVER_URL; 
 
 app.use(express.json());
-app.get('/', (req, res) => res.send('Premium Fire OTP Bot v11.1 (Concurrency, Fast Auto-OTP & Admin Fix) is Running!'));
+app.get('/', (req, res) => res.send('Premium Fire OTP Bot v11.2 (Ultra Fast & API Reveal) is Running!'));
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 
 // --- MongoDB Setup ---
@@ -100,9 +100,9 @@ bot.getMe().then(me => {
 let adminState = {};
 let userState = {};
 
-// 🟢 NEW: CONCURRENT ORDER TRACKING SYSTEM
-const allOrders = new Map(); // Key: numId -> Value: OrderData
-const userRecentOrder = new Map(); // Key: chatId -> Value: last numId
+// 🟢 CONCURRENT ORDER TRACKING SYSTEM
+const allOrders = new Map(); 
+const userRecentOrder = new Map(); 
 const deliveredOtps = new Set();
 
 // ==========================================
@@ -401,7 +401,7 @@ async function checkForceSub(chatId) {
     return true;
 }
 
-// 🟢 NEW: Process OTP Success Action (Creates NEW message, leaves original unchanged)
+// 🟢 Process OTP Success Action (Creates NEW message)
 async function handleOtpSuccess(order, otpCode, fullSmsText) {
     if (deliveredOtps.has(order.numId)) return;
     deliveredOtps.add(order.numId);
@@ -468,10 +468,8 @@ async function handleOtpSuccess(order, otpCode, fullSmsText) {
         finalUserMsg = `🎉 *Congratulations! Boss*\n\n📱 *Platform:* ${platDisplay}\n🌍 *Country:* ${order.country}\n\n${boxNumber}`;
     }
     
-    // 🟢 Send as a completely NEW message for the OTP
     await bot.sendMessage(chatId, finalUserMsg, { parse_mode: 'Markdown', reply_markup: otpMarkup }).catch(()=>{});
     
-    // Group Channel Success Message
     const maskedPhone = maskNumber(order.phone);
     const groupBoxNumber = `╔════════════════════╗\n║ 📱 \`${maskedPhone}\` ║ LN- ${detectedLang}\n╚════════════════════╝`;
     
@@ -487,9 +485,9 @@ async function handleOtpSuccess(order, otpCode, fullSmsText) {
     bot.sendMessage(OTP_GROUP_ID, groupFinalText, { parse_mode: 'Markdown', reply_markup: groupMarkup }).catch(()=>{});
 }
 
-// 🟢 NEW: Super Fast Background Silent Polling (Auto OTP)
+// 🟢 Super Fast Background Silent Polling
 async function startSilentPolling(numId) {
-    const pollInterval = 2500; // Super fast 2.5s
+    const pollInterval = 4000; // 4 seconds delay to avoid API block
     const maxDuration = NUMBER_EXPIRY_MS;
 
     const checkTask = async () => {
@@ -536,20 +534,99 @@ async function startSilentPolling(numId) {
             if (otpFound) {
                 currentOrder.status = 'completed';
                 await handleOtpSuccess(currentOrder, otpCode, fullSmsText);
-                return; // End polling loop natively
+                return;
             }
         } catch (e) {}
 
-        // Schedule next check
         if (currentOrder.status === 'pending') {
             setTimeout(checkTask, pollInterval);
         }
     };
-    checkTask(); // Start the loop immediately
+    checkTask(); 
 }
 
 
-// 🟢 Super Fast Number Generation (With Concurrent Multi-Order Map tracking)
+// 🟢 Manual OTP Fetch (For Inbox / fallback)
+async function processOtpFetch(chatId, numId, msgId, queryId = null) {
+    const lastOrder = userLastOrder.get(chatId);
+    
+    if (!lastOrder || String(lastOrder.numId) !== String(numId)) {
+        if(queryId) bot.answerCallbackQuery(queryId, { text: "এই নাম্বারটি আর valid নয়।", show_alert: true });
+        return;
+    }
+    if (Date.now() - lastOrder.createdAt > NUMBER_EXPIRY_MS) return;
+    if (deliveredOtps.has(numId)) { 
+        if(queryId) bot.answerCallbackQuery(queryId, { text: "OTP ইতিমধ্যেই ডেলিভার হয়েছে!", show_alert: true }); 
+        return; 
+    }
+    if (lastOrder.isChecking) {
+        if(queryId) bot.answerCallbackQuery(queryId, { text: "OTP চেক করা হচ্ছে, একটু অপেক্ষা করুন...", show_alert: true });
+        return;
+    }
+
+    if(queryId) bot.answerCallbackQuery(queryId);
+    
+    lastOrder.isChecking = true;
+    let countMsgId = msgId;
+    
+    if (msgId === lastOrder.msgId) {
+        const countMsg = await bot.sendMessage(chatId, `⏳ *OTP খোঁজা হচ্ছে...*`, { parse_mode: 'Markdown' });
+        countMsgId = countMsg.message_id;
+    }
+
+    let otpFound = false;
+    let otpCode = '';
+    let fullSmsText = '';
+    const panel = lastOrder.panel || 'nexa';
+    
+    for (let i = 15; i >= 1; i--) {
+        bot.editMessageText(`⏳ *OTP খোঁজা হচ্ছে:* ${i}...`, { chat_id: chatId, message_id: countMsgId, parse_mode: 'Markdown' }).catch(()=>{});
+        
+        try {
+            if (panel === 'nexa') {
+                const res = await apiRequest('get', `${BASE_URL}/api/v1/numbers/${numId}/sms`, null, 15000);
+                if (res.data && res.data.success && res.data.otp) {
+                    otpFound = true; otpCode = extractOTP(res.data.otp); fullSmsText = res.data.otp;
+                }
+            } else if (panel === 'mk') {
+                await mkRequest('check_otp').catch(()=>{});
+                const dateFilter = getMkDate();
+                const hist = await mkRequest('get_history', { filter: 'all', page: 1, limit: 15, date: dateFilter });
+                if (hist && Array.isArray(hist.data)) {
+                    const phoneDigits = lastOrder.phone.replace(/\D/g,'').slice(-6);
+                    const matched = hist.data.find(o => String(o.id) === String(numId) || (o.phone_number && o.phone_number.replace(/\D/g,'').includes(phoneDigits)));
+                    if (matched && matched.status === 'success') {
+                        otpFound = true;
+                        if (matched.full_sms_list) fullSmsText = matched.full_sms_list.split('|||')[0];
+                        else if (matched.full_sms) fullSmsText = matched.full_sms;
+                        else if (matched.otps) fullSmsText = matched.otps.split('|||')[0];
+                        otpCode = extractOTP(fullSmsText);
+                        if (otpCode.toLowerCase() === 'your' || otpCode.trim() === '') otpCode = "Code Not Found (Check SMS)";
+                    }
+                }
+            }
+            if (otpFound) break;
+        } catch (e) {}
+        
+        if (!otpFound) await new Promise(resolve => setTimeout(resolve, 1500));
+    }
+
+    lastOrder.isChecking = false;
+
+    if (otpFound) {
+        deliveredOtps.add(numId);
+        activePolls.delete(numId);
+        if (allOrders.has(numId)) allOrders.get(numId).status = 'completed';
+        
+        bot.deleteMessage(chatId, countMsgId).catch(()=>{});
+        await handleOtpSuccess(lastOrder, otpCode, fullSmsText);
+    } else {
+        const actionMarkup = { inline_keyboard: [[ { text: "🔄 Try Again", callback_data: `fetch_otp_${numId}`, style: "primary" } ]] };
+        bot.editMessageText(`⚠️ *OTP Not Found!*`, { chat_id: chatId, message_id: countMsgId, parse_mode: 'Markdown', reply_markup: actionMarkup }).catch(()=>{});
+    }
+}
+
+// 🟢 SUPER FAST Number Generation & Smart Error Handling
 async function generateNewNumber(chatId, plat, country, msgIdToEdit = null) {
     const ranges = await loadRanges(); 
     const rangeData = ranges[plat]?.[country];
@@ -566,14 +643,9 @@ async function generateNewNumber(chatId, plat, country, msgIdToEdit = null) {
     let sentMsg;
     if (msgIdToEdit) {
         sentMsg = { message_id: msgIdToEdit, chat: { id: chatId } };
+        await bot.editMessageText("🚀 *নাম্বার জেনারেট হচ্ছে...*", { chat_id: chatId, message_id: msgIdToEdit, parse_mode: 'Markdown' }).catch(()=>{});
     } else {
-        sentMsg = await bot.sendMessage(chatId, "🔄 *প্রস্তুত করা হচ্ছে...*", { parse_mode: 'Markdown' });
-    }
-
-    const animFrames = ["🔍 *নাম্বার খোঁজা হচ্ছে...*", "🚀 *নাম্বার জেনারেট হচ্ছে...*"];
-    for (let frame of animFrames) {
-        await bot.editMessageText(frame, { chat_id: chatId, message_id: sentMsg.message_id, parse_mode: 'Markdown' }).catch(()=>{});
-        await new Promise(r => setTimeout(r, 100)); // Super fast!
+        sentMsg = await bot.sendMessage(chatId, "🚀 *নাম্বার জেনারেট হচ্ছে...*", { parse_mode: 'Markdown' });
     }
     
     try {
@@ -581,16 +653,20 @@ async function generateNewNumber(chatId, plat, country, msgIdToEdit = null) {
         let numId = null;
         let finalPhone = null;
         let isSessionError = false;
+        let apiErrorMsg = "প্যানেলে নাম্বার স্টকে নেই বা লিমিট শেষ।";
         
-        const cleanRange = rangeVal.replace(/[^0-9Xx]/g, '');
+        // Remove spaces and hashes
+        const cleanRange = rangeVal.replace(/[^0-9Xx]/gi, '');
 
         if (panel === 'nexa') {
             const res = await apiRequest('post', `${BASE_URL}/api/v1/numbers/get`, { range: cleanRange, format: "international" }, 25000); 
             if (res.data && res.data.success) {
                 success = true; numId = res.data.number_id; finalPhone = res.data.number;
+            } else if (res.data && res.data.message) {
+                apiErrorMsg = res.data.message;
             }
         } else if (panel === 'mk') {
-            const resData = await mkRequest('get_number', { range: rangeVal });
+            const resData = await mkRequest('get_number', { range: cleanRange });
             if (resData && resData.status === 'success') {
                 success = true; finalPhone = resData.number;
                 const dateFilter = getMkDate();
@@ -603,16 +679,20 @@ async function generateNewNumber(chatId, plat, country, msgIdToEdit = null) {
                 if (!numId) numId = finalPhone; 
             } else if (resData && resData.message) {
                 let msgStr = resData.message.toLowerCase();
-                if (msgStr.includes('expire') || msgStr.includes('login') || msgStr.includes('session')) isSessionError = true;
+                if (msgStr.includes('expire') || msgStr.includes('login') || msgStr.includes('session')) {
+                    isSessionError = true;
+                } else {
+                    apiErrorMsg = resData.message;
+                }
             }
         }
 
         if (success) {
             const createdAt = Date.now();
             
-            // 🟢 Add to Multi-Tasking Order Map
             allOrders.set(String(numId), { chatId: chatId, phone: finalPhone, plat: plat, country: country, panel: panel, createdAt: createdAt, msgId: sentMsg.message_id, status: 'pending' });
             userRecentOrder.set(chatId, String(numId));
+            userLastOrder.set(chatId, { numId: numId, phone: finalPhone, plat: plat, country: country, createdAt: createdAt, msgId: sentMsg.message_id, panel: panel, isChecking: false });
             
             updateUserStat(chatId, 'number');
             updateGlobalStats('pending');
@@ -637,12 +717,11 @@ async function generateNewNumber(chatId, plat, country, msgIdToEdit = null) {
             
             const config = await getAppConfig();
             if (config.auto_otp) {
-                // Starts super fast background polling without replacing the message text
                 startSilentPolling(numId);
             }
 
         } else {
-            let errorText = "❌ *তোর কপাল খারাফ রে, Number নাই, আবার চেষ্টা কর 🥲*";
+            let errorText = `❌ *তোর কপাল খারাফ রে, Number নাই, আবার চেষ্টা কর 🥲*\n\n⚠️ *Reason:* \`${apiErrorMsg}\``;
             let replyMarkup = undefined;
             if (isSessionError) {
                 errorText = "❌ *নাম্বার আর OTP দিতে দিতে আমার জীবন শেষ 😩*\n\n_Admin কে বল আমারে এক গ্লাস পানি দিতে 🥺_";
@@ -651,13 +730,13 @@ async function generateNewNumber(chatId, plat, country, msgIdToEdit = null) {
             bot.editMessageText(errorText, { chat_id: chatId, message_id: sentMsg.message_id, parse_mode: 'Markdown', reply_markup: replyMarkup }).catch(()=>{});
         }
     } catch (error) { 
-        bot.editMessageText("❌ *তোর কপাল খারাফ রে, Number নাই, আবার চেষ্টা কর 🥲*", { chat_id: chatId, message_id: sentMsg.message_id, parse_mode: 'Markdown' }).catch(()=>{}); 
+        bot.editMessageText("❌ *তোর কপাল খারাফ রে, Number নাই, আবার চেষ্টা কর 🥲*\n\n⚠️ *Reason:* `সার্ভার স্লো বা টাইমআউট!`", { chat_id: chatId, message_id: sentMsg.message_id, parse_mode: 'Markdown' }).catch(()=>{}); 
     }
 }
 
 // Admin Cancel State Helper
 function getCancelMarkup() {
-    return { inline_keyboard: [[{ text: "🔙 Cancel", callback_data: "adm_cancel_state", style: "danger" }]] };
+    return { inline_keyboard: [[{ text: "🔙 Cancel / Back", callback_data: "adm_cancel_state", style: "danger" }]] };
 }
 
 // --- Commands & Messages ---
@@ -669,7 +748,6 @@ bot.onText(/\/start(.*)/, async (msg, match) => {
     if (u && u.banned) return bot.sendMessage(chatId, "🚫 *You are banned from using this bot.*", { parse_mode: 'Markdown' });
     if (!(await checkForceSub(chatId))) return;
 
-    // Deep Linking from OTP Group
     if (param.startsWith('gnew_')) {
         const parts = param.split('_');
         const plat = parts[1];
@@ -795,6 +873,13 @@ bot.on('message', async (msg) => {
             ranges[state.platform][state.country] = { range: text, panel: state.panel || 'nexa' };
             await saveRanges(ranges);
             bot.sendMessage(chatId, `✅ *${state.platform}* এর জন্য রেঞ্জ সেভ হয়েছে!`, { parse_mode: 'Markdown' });
+            const icon = getPlatIcon(state.platform);
+            const platName = state.platform.charAt(0).toUpperCase() + state.platform.slice(1);
+            const broadcastMsg = `📢 *NEW NUMBER STOCKED!*\n\n${icon} *Platform:* ${platName}\n🌍 *Country:* ${state.country}\n\n🔥 _Go to "GET NUMBER" and grab your numbers now!_`;
+            try {
+                const users = await User.find({});
+                users.forEach(u => bot.sendMessage(u.id, broadcastMsg, { parse_mode: 'Markdown' }).catch(()=>{}));
+            } catch(e){}
             delete adminState[chatId]; return;
         }
         else if (state.action === 'wait_range_edit') {
@@ -899,7 +984,6 @@ bot.on('message', async (msg) => {
             if (!activeOrder) return bot.sendMessage(chatId, "⚠️ *কোনো অ্যাক্টিভ নাম্বার নেই!*\n\n_আগে একটি নাম্বার জেনারেট করুন।_", { parse_mode: 'Markdown' });
             
             bot.sendMessage(chatId, "⏳ *ইনবক্স চেক করা হচ্ছে...*", { parse_mode: 'Markdown' }).then(msg => {
-                // Manually trigger fetch check
                 processOtpFetch(chatId, recentNumId, msg.message_id, null);
             });
         }
@@ -1021,13 +1105,12 @@ bot.on('callback_query', async (query) => {
             const menu = await getAdminMenu();
             bot.editMessageText("🛠 *Admin Control Panel*\n\nSelect an option below:", { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown', reply_markup: menu });
         }
-        // 🟢 FIX 4: Togglers without closing menu
         else if (data === "adm_tog_autootp" && chatId === ADMIN_ID) {
             const config = await getAppConfig();
             config.auto_otp = !config.auto_otp;
             await saveAppConfig(config);
             const menu = await getAdminMenu();
-            bot.editMessageReplyMarkup(menu, { chat_id: chatId, message_id: msgId }).catch(()=>{});
+            bot.editMessageReplyMarkup(menu.reply_markup, { chat_id: chatId, message_id: msgId }).catch(()=>{});
             bot.answerCallbackQuery(query.id, { text: `Auto OTP is now ${config.auto_otp ? 'ON' : 'OFF'}`, show_alert: false });
         }
         else if (data === "adm_tog_reward" && chatId === ADMIN_ID) {
@@ -1035,7 +1118,7 @@ bot.on('callback_query', async (query) => {
             config.reward_system = !config.reward_system;
             await saveAppConfig(config);
             const menu = await getAdminMenu();
-            bot.editMessageReplyMarkup(menu, { chat_id: chatId, message_id: msgId }).catch(()=>{});
+            bot.editMessageReplyMarkup(menu.reply_markup, { chat_id: chatId, message_id: msgId }).catch(()=>{});
             bot.answerCallbackQuery(query.id, { text: `Reward System is now ${config.reward_system ? 'ON' : 'OFF'}`, show_alert: false });
         }
         else if (data === "adm_balance" && chatId === ADMIN_ID) {
@@ -1043,6 +1126,7 @@ bot.on('callback_query', async (query) => {
             try {
                 const res = await apiRequest('get', `${BASE_URL}/api/v1/balance`);
                 if(res.data.success) {
+                    const menu = await getAdminMenu();
                     bot.editMessageText(`💰 *API Balance:* \`${parseFloat(res.data.balance).toFixed(2)}\` ৳`, { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: "🔙 Back", callback_data: "admin_main", style: "danger" }]] }});
                 }
             } catch(e) { bot.answerCallbackQuery(query.id, { text: "Error getting balance", show_alert:true }); }
@@ -1342,26 +1426,14 @@ bot.on('callback_query', async (query) => {
             if (order) {
                 order.status = 'cancelled';
                 activePolls.delete(numId);
-                await bot.editMessageText("❌ *Number Cancelled. Generating New...*", { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown' }).catch(()=>{});
-                await generateNewNumber(chatId, order.plat, order.country, msgId);
+                await bot.editMessageText("❌ *Number Cancelled.*", { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown' }).catch(()=>{});
+                await generateNewNumber(chatId, order.plat, order.country, null);
             } else {
                 bot.editMessageText("❌ *Session Expired. Start again.*", { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown' }).catch(()=>{});
             }
             bot.answerCallbackQuery(query.id);
         }
         
-        else if (data === "get_new_num") {
-            const recentNumId = userRecentOrder.get(chatId);
-            const lastOrder = recentNumId ? allOrders.get(recentNumId) : null;
-            if (lastOrder) {
-                await generateNewNumber(chatId, lastOrder.plat, lastOrder.country, null);
-            } else {
-                bot.sendMessage(chatId, "⚠️ Session expired, please go to GET NUMBER again.");
-            }
-            bot.answerCallbackQuery(query.id);
-        }
-
-        // --- Fetch OTP Callbacks (Manual checking logic) ---
         else if (data.startsWith('fetch_otp_')) {
             const numId = data.split('fetch_otp_')[1];
             await processOtpFetch(chatId, numId, msgId, query.id);
@@ -1386,4 +1458,4 @@ Promise.all([loadApiKeys(), loadMkCookies()]).then(() => {
     }, 3 * 60 * 1000); 
 });
 
-console.log("🚀 Premium Bulletproof Bot v11.1 (Concurrency, Fast Auto-OTP & Admin Fix) is Alive!");
+console.log("🚀 Premium Bulletproof Bot v11.2 (Ultra Fast & API Reveal) is Alive!");
