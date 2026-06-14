@@ -15,7 +15,7 @@ const PORT = process.env.PORT || 3000;
 const SERVER_URL = process.env.SERVER_URL; 
 
 app.use(express.json());
-app.get('/', (req, res) => res.send('Premium Fire OTP Bot v13.0 (Anti-Block & Super Fast) is Running!'));
+app.get('/', (req, res) => res.send('Premium Fire OTP Bot v14.0 (Dynamic API URL Fixed) is Running!'));
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 
 // --- MongoDB Setup ---
@@ -92,11 +92,11 @@ let adminState = {};
 let userState = {};
 
 // ==========================================
-// 🔥 DUAL PANEL API SETUP (Stexsms & Voltxsms)
+// 🔥 DUAL PANEL API SETUP (Dynamic URL FIX)
 // ==========================================
 const PANELS = {
-    stexsms: { url: 'https://api.2oo9.cloud/MXS47FLFXBU/tness/@public/api' },
-    voltxsms: { url: 'https://api.2oo9.cloud/MXS47FLFXBU/tnevs/@public/api' }
+    stexsms: { path: 'tness' },
+    voltxsms: { path: 'tnevs' }
 };
 
 let panelKeys = { stexsms: "", voltxsms: "" };
@@ -112,20 +112,23 @@ async function loadPanelKeys() {
 }
 
 async function savePanelKey(panel, key) {
-    panelKeys[panel] = key.trim(); // Remove accidental spaces
+    panelKeys[panel] = key.trim();
     await Setting.findOneAndUpdate({ key: 'panel_keys' }, { data: panelKeys }, { upsert: true });
 }
 
-// 🟢 FIX: Added strict Headers and User-Agent to prevent Server Blocks/Timeouts
+// 🟢 FIX: Dynamic URL Generation based on the API Key
 async function panelRequest(method, endpoint, data = null, panelName = 'stexsms') {
     const key = panelKeys[panelName];
     if (!key) throw new Error(`NO_API_KEY_${panelName}`);
     
-    const url = `${PANELS[panelName].url}${endpoint}`;
+    const cleanKey = key.trim();
     
-    // Cloudflare/Server Anti-bot Bypass Headers
+    // এখানে URL-এর মাঝে ডায়নামিক ভাবে API Key (cleanKey) বসে যাবে
+    const url = `https://api.2oo9.cloud/${cleanKey}/${PANELS[panelName].path}/@public/api${endpoint}`;
+    
+    // Cloudflare Anti-bot Bypass & Official Headers
     const headers = { 
-        'mauthapi': key.trim(),
+        'mauthapi': cleanKey, // ডকুমেন্টেশনের জন্য হেডারেও রাখা হলো
         'Content-Type': 'application/json',
         'Accept': 'application/json',
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -134,9 +137,9 @@ async function panelRequest(method, endpoint, data = null, panelName = 'stexsms'
     
     try {
         if(method === 'post') {
-            return await axios.post(url, data, { headers, timeout: 20000 }); // Increased timeout to 20s just in case
+            return await axios.post(url, data, { headers, timeout: 15000 });
         } else {
-            return await axios.get(url, { headers, timeout: 20000 });
+            return await axios.get(url, { headers, timeout: 15000 });
         }
     } catch (e) { 
         throw e; 
@@ -390,7 +393,7 @@ async function generateNewNumber(chatId, plat, country, msgIdToEdit = null) {
             } else if (error.response) {
                 errTxt = `⚠️ *Admin API Error (${error.response.status}):*\n\`${JSON.stringify(error.response.data)}\`\n\n📌 *API Key অথবা Range ID চেক করুন।*`;
             } else {
-                errTxt = `⚠️ *Admin Network Error:* \`${error.message}\`\n(This means the panel's server blocked the bot's connection. User-Agent has been added to bypass this.)`;
+                errTxt = `⚠️ *Admin Network Error:* \`${error.message}\``;
             }
         }
 
@@ -473,7 +476,7 @@ setInterval(async () => {
         } catch(e) { }
     }
     isPollingOTP = false;
-}, 5000);
+}, 4000);
 
 let isPollingFeed = false;
 setInterval(async () => {
@@ -494,7 +497,7 @@ setInterval(async () => {
                     if(!seenConsoleHits.has(uniqueId)) {
                         seenConsoleHits.add(uniqueId);
                         
-                        if(seenConsoleHits.size > 1000) { 
+                        if(seenConsoleHits.size > 1500) { 
                             const firstItem = seenConsoleHits.values().next().value;
                             seenConsoleHits.delete(firstItem);
                         }
@@ -515,7 +518,7 @@ setInterval(async () => {
         } catch(e) {}
     }
     isPollingFeed = false;
-}, 8000);
+}, 6000);
 
 
 // --- Commands & Messages ---
@@ -1036,7 +1039,7 @@ bot.on('callback_query', async (query) => {
 });
 
 Promise.all([loadPanelKeys()]).then(() => {
-    console.log("🔑 API settings loaded from DB.");
+    console.log("🔑 Dynamic API URL logic loaded successfully.");
 });
 
-console.log("🚀 V13.0 Anti-Block & Fast Polling System Booted Successfully!");
+console.log("🚀 V14.0 System Booted Successfully!");
