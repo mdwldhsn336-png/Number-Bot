@@ -15,7 +15,7 @@ const PORT = process.env.PORT || 3000;
 const SERVER_URL = process.env.SERVER_URL; 
 
 app.use(express.json());
-app.get('/', (req, res) => res.send('Premium Fire OTP Bot v12.0 (Dual Panel - Stexsms & Voltxsms) is Running!'));
+app.get('/', (req, res) => res.send('Premium Fire OTP Bot v11.5 (Global Feed, Admin & Cookie Fixed) is Running!'));
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 
 // --- MongoDB Setup ---
@@ -71,7 +71,7 @@ const BOT_TOKEN = process.env.BOT_TOKEN;
 const ADMIN_ID = parseInt(process.env.ADMIN_ID);
 const OTP_GROUP_ID = "@otp_number_grp";
 const PAYMENT_GROUP_ID = "-1003925192534"; 
-const NUMBER_EXPIRY_MS = 15 * 60 * 1000; 
+const NUMBER_EXPIRY_MS = 15 * 60 * 1000; // 15 Minutes Timeout
 
 let bot;
 if (SERVER_URL) {
@@ -92,36 +92,32 @@ let adminState = {};
 let userState = {};
 
 // ==========================================
-// 🔥 DUAL PANEL API SETUP (Stexsms & Voltxsms)
+// 🔥 NEW PANEL API SETUP (STEXSMS COOKIE BASED)
 // ==========================================
-const PANELS = {
-    stexsms: { url: 'https://api.2oo9.cloud/MXS47FLFXBU/tness/@public/api' },
-    voltxsms: { url: 'https://api.2oo9.cloud/MXS47FLFXBU/tnevs/@public/api' }
-};
+// ⚠️ Stexsms এর সঠিক API URL এখানে দিন (যদি আলাদা হয়)
+const PANEL_BASE_URL = process.env.PANEL_BASE_URL || 'https://api.2oo9.cloud/MXS47FLFXBU/tness/@public/api'; 
+let panelCookie = process.env.PANEL_COOKIE || "";
 
-let panelKeys = { stexsms: "", voltxsms: "" };
-
-async function loadPanelKeys() {
+async function loadPanelCookie() {
     try {
-        const doc = await Setting.findOne({ key: 'panel_keys' });
-        if (doc && doc.data) {
-            panelKeys.stexsms = doc.data.stexsms || "";
-            panelKeys.voltxsms = doc.data.voltxsms || "";
-        }
+        const doc = await Setting.findOne({ key: 'panel_cookie' });
+        if (doc && doc.data && doc.data.cookie) panelCookie = doc.data.cookie;
     } catch(e) {}
 }
 
-async function savePanelKey(panel, key) {
-    panelKeys[panel] = key;
-    await Setting.findOneAndUpdate({ key: 'panel_keys' }, { data: panelKeys }, { upsert: true });
+async function savePanelCookie(cookie) {
+    await Setting.findOneAndUpdate({ key: 'panel_cookie' }, { data: { cookie } }, { upsert: true });
+    panelCookie = cookie;
 }
 
-async function panelRequest(method, endpoint, data = null, panelName = 'stexsms') {
-    const key = panelKeys[panelName];
-    if (!key) throw new Error(`API Key not set for ${panelName}`);
-    
-    const headers = { 'mauthapi': key };
-    const url = `${PANELS[panelName].url}${endpoint}`;
+async function panelRequest(method, endpoint, data = null) {
+    // API Key এর বদলে Cookie পাঠানো হচ্ছে
+    const headers = { 
+        'Cookie': panelCookie,
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'application/json'
+    };
+    const url = `${PANEL_BASE_URL}${endpoint}`;
     
     try {
         if(method === 'post') return await axios.post(url, data, { headers, timeout: 15000 });
@@ -247,7 +243,7 @@ function getAdminMenu() {
             [{ text: "🌐 Manage Sites", callback_data: "adm_sites", style: "primary" }, { text: "⚙️ Manage Ranges", callback_data: "adm_ranges", style: "primary" }],
             [{ text: "📊 Dashboard", callback_data: "adm_dash", style: "primary" }, { text: "📢 Broadcast", callback_data: "adm_broadcast", style: "primary" }],
             [{ text: "👥 Manage Users", callback_data: "adm_users", style: "primary" }, { text: "📄 Download User List", callback_data: "adm_userlist", style: "success" }],
-            [{ text: "💳 Payment Settings", callback_data: "adm_paycfg", style: "success" }, { text: "🔑 Manage Panel API Keys", callback_data: "adm_apikey", style: "danger" }]
+            [{ text: "💳 Payment Settings", callback_data: "adm_paycfg", style: "success" }, { text: "🍪 Manage Stexsms Cookie", callback_data: "adm_cookie", style: "danger" }]
         ]
     };
 }
@@ -299,25 +295,24 @@ async function checkForceSub(chatId) {
     return true;
 }
 
-// 🟢 Fast Number Generation (With Dual Panel Support & Clean Errors)
+// 🟢 Fast Number Generation (No Animation)
 async function generateNewNumber(chatId, plat, country, msgIdToEdit = null) {
     const ranges = await loadRanges(); 
     const rangeData = ranges[plat]?.[country];
     
     if (!rangeData) {
-        const errTxt = "❌ *সার্ভারে এই মুহূর্তে কোনো রেঞ্জ নেই।*";
+        const errTxt = "❌ *Error: Range not found.*";
         if (msgIdToEdit) bot.editMessageText(errTxt, {chat_id: chatId, message_id: msgIdToEdit, parse_mode: 'Markdown'}).catch(()=>{});
         else bot.sendMessage(chatId, errTxt, {parse_mode: 'Markdown'});
         return;
     }
     
-    // সাপোর্ট ওল্ড ফরম্যাট (যদি প্যানেল আগে সেভ করা না থাকে)
     const rangeVal = typeof rangeData === 'string' ? rangeData : rangeData.range;
-    const panelName = typeof rangeData === 'string' ? 'stexsms' : (rangeData.panel || 'stexsms');
     const cleanRange = rangeVal.replace(/[^0-9Xx]/g, '');
 
     try {
-        const res = await panelRequest('post', '/getnum', { rid: cleanRange }, panelName);
+        // ডিরেক্ট কল, কোনো অ্যানিমেশন নেই
+        const res = await panelRequest('post', '/getnum', { rid: cleanRange });
         
         if (res.data && res.data.meta && res.data.meta.status === 'ok') {
             const fullPhone = res.data.data.full_number;
@@ -330,7 +325,7 @@ async function generateNewNumber(chatId, plat, country, msgIdToEdit = null) {
             let sentMsg;
             const boxNumber = `╔════════════════════╗\n║ 📱 \`Wait for auto OTP...\`\n╚════════════════════╝`;
             const platDisplay = `${getPlatIcon(plat)} ${plat.charAt(0).toUpperCase() + plat.slice(1)}`;
-            const text = `📱 *Platform:* ${platDisplay}\n🌍 *Country:* ${country}\n🔌 *Source:* ${panelName.toUpperCase()}\n\n${boxNumber}`;
+            const text = `📱 *Platform:* ${platDisplay}\n🌍 *Country:* ${country}\n\n${boxNumber}`;
             const actionMarkup = { 
                 inline_keyboard: [
                     [{ text: `📱 ${fullPhone}`, copy_text: { text: fullPhone }, style: "primary" }],
@@ -349,7 +344,6 @@ async function generateNewNumber(chatId, plat, country, msgIdToEdit = null) {
                 chatId: chatId,
                 plat: plat,
                 country: country,
-                panel: panelName,
                 createdAt: Date.now(),
                 msgId: sentMsg.message_id
             });
@@ -358,135 +352,120 @@ async function generateNewNumber(chatId, plat, country, msgIdToEdit = null) {
             updateGlobalStats('pending');
             
         } else {
-            // Clean Error Message for Users (No Gibberish)
-            const outTxt = "❌ *নাম্বার স্টকে নেই বা সার্ভার ব্যস্ত!*";
+            const outTxt = "❌ *Out of stock বা রেঞ্জ ভুল দেওয়া হয়েছে!*";
             if (msgIdToEdit) bot.editMessageText(outTxt, { chat_id: chatId, message_id: msgIdToEdit, parse_mode: 'Markdown' }).catch(()=>{});
             else bot.sendMessage(chatId, outTxt, { parse_mode: 'Markdown' });
         }
     } catch (error) { 
-        // Clean Error Message for Users
-        const errTxt = "⚠️ *সার্ভার সাময়িক ব্যস্ত আছে। একটু পর আবার চেষ্টা করুন।*";
+        const errTxt = "⚠️ *Stexsms প্যানেল কানেকশনে সমস্যা হচ্ছে বা Cookie Expire হয়েছে।*";
         if (msgIdToEdit) bot.editMessageText(errTxt, { chat_id: chatId, message_id: msgIdToEdit, parse_mode: 'Markdown' }).catch(()=>{}); 
         else bot.sendMessage(chatId, errTxt, { parse_mode: 'Markdown' });
-        
-        // Log real error to console for Admin to check if needed
-        if (error.response) console.log(`[Panel Error - ${panelName}]:`, error.response.status, error.response.data);
     }
 }
 
 // ==========================================
-// 🔄 BACKGROUND TASKS (DUAL POLLING)
+// 🔄 BACKGROUND TASKS (AUTO OTP & LIVE CONSOLE)
 // ==========================================
 
-// 1. Check for Auto OTPs from BOTH panels
+// 1. Check for Auto OTPs (User Specific)
 setInterval(async () => {
     if (activeNumbers.size === 0) return;
-    
-    for (const pName of ['stexsms', 'voltxsms']) {
-        if (!panelKeys[pName]) continue;
-        
-        try {
-            const res = await panelRequest('get', '/success-otp', null, pName);
-            if (res.data && res.data.meta && res.data.meta.status === 'ok') {
-                const otps = res.data.data.otps || [];
+    try {
+        const res = await panelRequest('get', '/success-otp');
+        if (res.data && res.data.meta && res.data.meta.status === 'ok') {
+            const otps = res.data.data.otps || [];
+            
+            for (let otpData of otps) {
+                const otpId = String(otpData.otp_id);
+                const number = otpData.number;
                 
-                for (let otpData of otps) {
-                    const otpId = String(otpData.otp_id);
-                    const number = otpData.number;
+                if (deliveredOtps.has(otpId)) continue;
+                
+                if (activeNumbers.has(number)) {
+                    const session = activeNumbers.get(number);
+                    deliveredOtps.add(otpId);
                     
-                    if (deliveredOtps.has(otpId)) continue;
+                    const otpCode = extractOTP(otpData.message);
+                    const detectedLang = detectLang(otpData.message);
                     
-                    if (activeNumbers.has(number)) {
-                        const session = activeNumbers.get(number);
-                        deliveredOtps.add(otpId);
-                        
-                        const otpCode = extractOTP(otpData.message);
-                        const detectedLang = detectLang(otpData.message);
-                        
-                        let earnedAmount = 0;
-                        const config = await getAppConfig();
-                        const rate = config.per_otp_rate || 0;
-                        earnedAmount = rate;
-                        
-                        await Earning.create({ num_id: otpId, user_id: String(session.chatId), date: getLocDate() });
-                        
-                        const uDoc = await User.findOne({ id: String(session.chatId) });
-                        if(uDoc) {
-                            uDoc.balance = parseFloat((uDoc.balance + rate).toFixed(2));
-                            uDoc.today_balance = parseFloat((uDoc.today_balance + rate).toFixed(2));
-                            uDoc.total_otps += 1;
-                            uDoc.today_otps += 1;
-                            await uDoc.save();
-                        }
-                        updateGlobalStats('success');
-                        updateTraffic(session.plat, session.country);
-                        
-                        const formatPhone = '+' + number;
-                        const platDisplay = `${getPlatIcon(session.plat)} ${session.plat.charAt(0).toUpperCase() + session.plat.slice(1)}`;
-                        const boxNumber = `╔════════════════════╗\n║ 📱 \`${formatPhone}\` ║ LN- ${detectedLang}\n╚════════════════════╝`;
-                        
-                        let earningText = `💰 *Earned:* \`${parseFloat(earnedAmount.toFixed(2))}\` ৳\n💳 *Total Balance:* \`${parseFloat(uDoc.balance.toFixed(2))}\` ৳`;
-                        
-                        const otpMarkup = { 
-                            inline_keyboard: [
-                                [{ text: ` ${otpCode}`, copy_text: { text: otpCode }, style: "success" }],
-                                [
-                                    { text: "🔄 Get New Number", callback_data: "get_new_num", style: "success" },
-                                    { text: "💬 OTP Group", url: `https://t.me/${OTP_GROUP_ID.replace('@', '')}`, style: "primary" }
-                                ]
-                            ] 
-                        };
-                        
-                        bot.deleteMessage(session.chatId, session.msgId).catch(()=>{});
-                        bot.sendMessage(session.chatId, `🔔 *AUTO OTP RECEIVED!*\n\n📱 *Platform:* ${platDisplay}\n🌍 *Country:* ${session.country}\n\n${boxNumber}\n\n🎉 *Congratulations! Boss*\n${earningText}`, { parse_mode: 'Markdown', reply_markup: otpMarkup }).catch(()=>{});
-                        
-                        activeNumbers.delete(number);
+                    let earnedAmount = 0;
+                    const config = await getAppConfig();
+                    const rate = config.per_otp_rate || 0;
+                    earnedAmount = rate;
+                    
+                    await Earning.create({ num_id: otpId, user_id: String(session.chatId), date: getLocDate() });
+                    
+                    const uDoc = await User.findOne({ id: String(session.chatId) });
+                    if(uDoc) {
+                        uDoc.balance = parseFloat((uDoc.balance + rate).toFixed(2));
+                        uDoc.today_balance = parseFloat((uDoc.today_balance + rate).toFixed(2));
+                        uDoc.total_otps += 1;
+                        uDoc.today_otps += 1;
+                        await uDoc.save();
                     }
+                    updateGlobalStats('success');
+                    updateTraffic(session.plat, session.country);
+                    
+                    const formatPhone = '+' + number;
+                    const platDisplay = `${getPlatIcon(session.plat)} ${session.plat.charAt(0).toUpperCase() + session.plat.slice(1)}`;
+                    const boxNumber = `╔════════════════════╗\n║ 📱 \`${formatPhone}\` ║ LN- ${detectedLang}\n╚════════════════════╝`;
+                    
+                    let earningText = `💰 *Earned:* \`${parseFloat(earnedAmount.toFixed(2))}\` ৳\n💳 *Total Balance:* \`${parseFloat(uDoc.balance.toFixed(2))}\` ৳`;
+                    
+                    const otpMarkup = { 
+                        inline_keyboard: [
+                            [{ text: ` ${otpCode}`, copy_text: { text: otpCode }, style: "success" }],
+                            [
+                                { text: "🔄 Get New Number", callback_data: "get_new_num", style: "success" },
+                                { text: "💬 OTP Group", url: `https://t.me/${OTP_GROUP_ID.replace('@', '')}`, style: "primary" }
+                            ]
+                        ] 
+                    };
+                    
+                    bot.deleteMessage(session.chatId, session.msgId).catch(()=>{});
+                    bot.sendMessage(session.chatId, `🔔 *AUTO OTP RECEIVED!*\n\n📱 *Platform:* ${platDisplay}\n🌍 *Country:* ${session.country}\n\n${boxNumber}\n\n🎉 *Congratulations! Boss*\n${earningText}`, { parse_mode: 'Markdown', reply_markup: otpMarkup }).catch(()=>{});
+                    
+                    activeNumbers.delete(number);
                 }
             }
-        } catch(e) { }
-    }
+        }
+    } catch(e) { }
 }, 5000);
 
-// 2. Global Live Console Feed from BOTH panels
+// 2. Global Live Console Feed (Send All Traffic to OTP Group)
 setInterval(async () => {
-    for (const pName of ['stexsms', 'voltxsms']) {
-        if (!panelKeys[pName]) continue;
-        
-        try {
-            const res = await panelRequest('get', '/console', null, pName);
-            if (res.data && res.data.meta && res.data.meta.status === 'ok') {
-                const hits = res.data.data.hits || [];
+    try {
+        const res = await panelRequest('get', '/console');
+        if (res.data && res.data.meta && res.data.meta.status === 'ok') {
+            const hits = res.data.data.hits || [];
+            
+            for(let hit of hits.reverse()) {
+                const uniqueId = `${hit.time}_${hit.range}_${hit.message.substring(0,5)}`;
                 
-                // Reverse so oldest processes first
-                for(let hit of hits.reverse()) {
-                    const uniqueId = `${pName}_${hit.time}_${hit.range}_${hit.message.substring(0,5)}`;
+                if(!seenConsoleHits.has(uniqueId)) {
+                    seenConsoleHits.add(uniqueId);
                     
-                    if(!seenConsoleHits.has(uniqueId)) {
-                        seenConsoleHits.add(uniqueId);
-                        
-                        if(seenConsoleHits.size > 1500) { 
-                            const firstItem = seenConsoleHits.values().next().value;
-                            seenConsoleHits.delete(firstItem);
-                        }
-                        
-                        const otpCode = extractOTP(hit.message);
-                        
-                        const msg = `🌐 *GLOBAL LIVE OTP* 🌐\n\n📱 *Platform:* ${hit.sid || 'Unknown'}\n🎯 *Range:* \`${hit.range}\`\n🔌 *Source:* ${pName.toUpperCase()}\n\n💬 *SMS:* \`${hit.message}\`\n\n💡 _Get your number from the bot!_`;
-                        
-                        const markup = { 
-                            inline_keyboard: [
-                                [{ text: `  ${otpCode}`, copy_text: { text: otpCode }, style: "success" }],
-                                [{ text: "🚀 Get Number From This Range", url: `https://t.me/${(await bot.getMe()).username}?start=GET_NUM` }]
-                            ] 
-                        };
-                        
-                        bot.sendMessage(OTP_GROUP_ID, msg, {parse_mode: 'Markdown', reply_markup: markup}).catch(()=>{});
+                    if(seenConsoleHits.size > 1000) { 
+                        const firstItem = seenConsoleHits.values().next().value;
+                        seenConsoleHits.delete(firstItem);
                     }
+                    
+                    const otpCode = extractOTP(hit.message);
+                    
+                    const msg = `🌐 *GLOBAL LIVE OTP* 🌐\n\n📱 *Platform:* ${hit.sid || 'Unknown'}\n🎯 *Range:* \`${hit.range}\`\n\n💬 *SMS:* \`${hit.message}\`\n\n💡 _Get your number from the bot!_`;
+                    
+                    const markup = { 
+                        inline_keyboard: [
+                            [{ text: `  ${otpCode}`, copy_text: { text: otpCode }, style: "success" }],
+                            [{ text: "🚀 Get Number From This Range", url: `https://t.me/${(await bot.getMe()).username}?start=GET_NUM` }]
+                        ] 
+                    };
+                    
+                    bot.sendMessage(OTP_GROUP_ID, msg, {parse_mode: 'Markdown', reply_markup: markup}).catch(()=>{});
                 }
             }
-        } catch(e) {}
-    }
+        }
+    } catch(e) {}
 }, 6000);
 
 
@@ -513,9 +492,10 @@ bot.on('message', async (msg) => {
         if(userState[chatId]) delete userState[chatId];
     }
     
-    // --- USER STATE MACHINE ---
+    // --- USER STATE MACHINE (Withdrawals & 2FA) ---
     if (userState[chatId]) {
         const state = userState[chatId];
+        
         if (state.action === 'wait_2fa_secret') {
             const secret = text.trim().replace(/\s+/g, '').toUpperCase();
             try {
@@ -525,9 +505,10 @@ bot.on('message', async (msg) => {
                 await save2FA(chatId, saved2fa);
                 bot.sendMessage(chatId, `✅ *2FA Secret সফলভাবে সেভ হয়েছে!*`, { parse_mode: 'Markdown' });
             } catch (e) { 
-                bot.sendMessage(chatId, `❌ *ভুল বা ইনভ্যালিড 2FA সিক্রেট কোড!*`, { parse_mode: 'Markdown' }); 
+                bot.sendMessage(chatId, `❌ *ভুল বা ইনভ্যালিড 2FA সিক্রেট কোড! সঠিক Base32 কোড দিন।*`, { parse_mode: 'Markdown' }); 
             }
-            delete userState[chatId]; return;
+            delete userState[chatId]; 
+            return;
         }
         else if (state.action === 'wait_wd_id') {
             state.account_id = text.trim();
@@ -575,37 +556,33 @@ bot.on('message', async (msg) => {
         }
         else if (state.action === 'wait_country_name') {
             state.country = text;
-            // Ask for Panel selection
-            bot.sendMessage(chatId, `✅ Country: ${text}\n\n📌 এবার কোন প্যানেল থেকে রেঞ্জ অ্যাড করবেন তা সিলেক্ট করুন:`, {
-                reply_markup: { inline_keyboard: [
-                    [{ text: "⚙️ Stexsms", callback_data: "setpan_stexsms" }, { text: "⚙️ Voltxsms", callback_data: "setpan_voltxsms" }]
-                ]}
-            });
-            return; // state action remains wait_country_name until button clicked
+            state.action = 'wait_range_val';
+            bot.sendMessage(chatId, `✅ Country: ${text}\n\n✏️ এবার API প্যানেলের রেঞ্জ টাইপ করুন (যেমন: 26134 বা 22501XXX):`);
+            return;
         }
         else if (state.action === 'wait_range_val') {
             const ranges = await loadRanges();
             if (!ranges[state.platform]) ranges[state.platform] = {};
-            ranges[state.platform][state.country] = { range: text, panel: state.panel };
+            ranges[state.platform][state.country] = { range: text };
             await saveRanges(ranges);
-            bot.sendMessage(chatId, `✅ *${state.platform}* এর জন্য রেঞ্জ সেভ হয়েছে! (Panel: ${state.panel})`, { parse_mode: 'Markdown' });
+            bot.sendMessage(chatId, `✅ *${state.platform}* এর জন্য রেঞ্জ সেভ হয়েছে!`, { parse_mode: 'Markdown' });
             delete adminState[chatId]; return;
         }
         else if (state.action === 'wait_range_edit') {
             const ranges = await loadRanges();
-            ranges[state.platform][state.country] = { range: text, panel: state.panel };
+            ranges[state.platform][state.country] = { range: text };
             await saveRanges(ranges);
-            bot.sendMessage(chatId, `✅ Range updated successfully! (Panel: ${state.panel})`);
+            bot.sendMessage(chatId, `✅ Range updated successfully!`);
             delete adminState[chatId]; return;
         }
-        else if (state.action === 'wait_apikey_add') {
-            const newKey = text.trim();
+        // COOKIE UPDATE STATE
+        else if (state.action === 'wait_cookie_add') {
+            const newCookie = text.trim();
             try {
-                await savePanelKey(state.panel, newKey);
-                bot.sendMessage(chatId, `✅ *${state.panel.toUpperCase()} API Key saved successfully!*`, { parse_mode: 'Markdown' });
+                await savePanelCookie(newCookie);
+                bot.sendMessage(chatId, "✅ *Stexsms Cookie saved successfully!*\n\nএখন থেকে বট এই কুকি ব্যবহার করে রিকোয়েস্ট করবে।", { parse_mode: 'Markdown' });
             } catch (e) {} delete adminState[chatId]; return;
         }
-        // ... (Other standard admin handlers skipped for brevity, they are all intact)
         else if (state.action === 'wait_broadcast_notice') {
             bot.sendMessage(chatId, "✅ *Broadcasting...*", { parse_mode: 'Markdown' });
             try {
@@ -627,6 +604,26 @@ bot.on('message', async (msg) => {
                 const config = await getAppConfig(); config.min_withdraw = val; await saveAppConfig(config);
                 bot.sendMessage(chatId, `✅ *Min Withdraw updated to ${val} ৳*`, { parse_mode: 'Markdown' });
             } else bot.sendMessage(chatId, "❌ Invalid amount");
+            delete adminState[chatId]; return;
+        }
+        else if (state.action === 'wait_pay_method_add') {
+            const m = text.trim();
+            if(m) {
+                const config = await getAppConfig(); 
+                if(!config.pay_methods.includes(m)) { config.pay_methods.push(m); await saveAppConfig(config); }
+                bot.sendMessage(chatId, `✅ *Payment Method '${m}' added!*`, { parse_mode: 'Markdown' });
+            }
+            delete adminState[chatId]; return;
+        }
+        else if (state.action === 'wait_manage_userid') {
+            const uid = text.trim();
+            const targetUser = await User.findOne({ id: String(uid) });
+            if (!targetUser) { bot.sendMessage(chatId, "❌ *User not found!*", { parse_mode: 'Markdown' }); } 
+            else {
+                const msgText = `👤 *USER DETAILS*\n\nID: \`${targetUser.id}\`\nName: ${targetUser.first_name}\nUsername: ${targetUser.username}\n\n💰 *Total Bal:* \`${parseFloat(targetUser.balance.toFixed(2))}\` ৳\n\n📊 *Total OTPs:* \`${targetUser.total_otps}\`\n🚫 *Status:* ${targetUser.banned ? 'BANNED' : 'ACTIVE'}`;
+                const markup = { inline_keyboard: [[{ text: targetUser.banned ? "✅ Unban User" : "🚫 Ban User", callback_data: `adm_togban_${targetUser.id}`, style: targetUser.banned ? "success" : "danger" }]]};
+                bot.sendMessage(chatId, msgText, { parse_mode: 'Markdown', reply_markup: markup });
+            }
             delete adminState[chatId]; return;
         }
     }
@@ -705,46 +702,20 @@ bot.on('callback_query', async (query) => {
             bot.editMessageText("🛠 *Admin Control Panel*\n\nSelect an option below:", { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown', reply_markup: getAdminMenu() });
         }
         
-        // --- Dual Panel API Keys ---
-        else if (data === "adm_apikey" && chatId === ADMIN_ID) {
-            let msgText = `🔑 *Panel API Keys:*\n\n`;
-            msgText += `*Stexsms:* \`${panelKeys.stexsms ? panelKeys.stexsms.substring(0, 8) + '...' : 'Not Set'}\`\n`;
-            msgText += `*Voltxsms:* \`${panelKeys.voltxsms ? panelKeys.voltxsms.substring(0, 8) + '...' : 'Not Set'}\`\n`;
-            
+        // --- Admin Options (Cookie Modified) ---
+        else if (data === "adm_cookie" && chatId === ADMIN_ID) {
+            let msgText = `🍪 *Current Stexsms Cookie:*\n\n\`${panelCookie ? (panelCookie.substring(0, 15) + '...') : 'No Cookie Set'}\``;
             let inlineKeyboard = [
-                [{ text: "✏️ Set Stexsms Key", callback_data: "set_key_stexsms", style: "primary" }, { text: "✏️ Set Voltxsms Key", callback_data: "set_key_voltxsms", style: "primary" }],
+                [{ text: "➕ Set New Cookie", callback_data: "set_cookie", style: "success" }],
                 [{ text: "🔙 Back", callback_data: "admin_main", style: "danger" }]
             ];
             bot.editMessageText(msgText, { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown', reply_markup: { inline_keyboard: inlineKeyboard } });
         }
-        else if (data.startsWith("set_key_") && chatId === ADMIN_ID) {
-            const panelName = data.split('_')[2];
-            adminState[chatId] = { action: 'wait_apikey_add', panel: panelName };
-            bot.sendMessage(chatId, `✏️ *${panelName.toUpperCase()} Panel* এর API Key টি পেস্ট করুন:`, { parse_mode: 'Markdown' });
+        else if (data === "set_cookie" && chatId === ADMIN_ID) {
+            adminState[chatId] = { action: 'wait_cookie_add' };
+            bot.sendMessage(chatId, "✏️ *Stexsms থেকে পাওয়া Cookie টি পেস্ট করুন:*", { parse_mode: 'Markdown' });
             bot.answerCallbackQuery(query.id);
         }
-
-        // --- Panel Selection during Range Add/Edit ---
-        else if (data.startsWith('setpan_') && chatId === ADMIN_ID) {
-            const panel = data.split('_')[1];
-            if (adminState[chatId] && adminState[chatId].country) {
-                adminState[chatId].panel = panel;
-                adminState[chatId].action = 'wait_range_val';
-                bot.editMessageText(`✅ Panel: ${panel.toUpperCase()}\n\n✏️ এবার রেঞ্জ টাইপ করুন (যেমন: 26134 বা 22501XXX):`, {chat_id: chatId, message_id: msgId});
-            }
-            bot.answerCallbackQuery(query.id);
-        }
-        else if (data.startsWith('edpan_') && chatId === ADMIN_ID) {
-            const p = data.split('_')[1];
-            if(adminState[chatId] && adminState[chatId].platform) {
-                adminState[chatId].panel = p;
-                adminState[chatId].action = 'wait_range_edit';
-                bot.editMessageText(`✅ Panel: ${p.toUpperCase()}\n\n✏️ এবার নতুন রেঞ্জ টাইপ করুন:`, {chat_id: chatId, message_id: msgId});
-            }
-            bot.answerCallbackQuery(query.id);
-        }
-
-        // --- Other Admin Controls ---
         else if (data === "adm_dash" && chatId === ADMIN_ID) {
             const totalUsers = await User.countDocuments();
             const statDoc = await Setting.findOne({ key: 'global_stats' });
@@ -752,9 +723,68 @@ bot.on('callback_query', async (query) => {
             const dashText = `📊 *BOT DASHBOARD*\n\n👥 *Total Users:* \`${totalUsers}\`\n\n📈 *Order Stats:*\n✅ Success: \`${gStats.success || 0}\`\n⏳ Pending: \`${gStats.pending || 0}\`\n❌ Failed: \`${gStats.failed || 0}\``;
             bot.editMessageText(dashText, { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: "🔙 Back", callback_data: "admin_main", style: "danger" }]] }});
         }
-        // ... (Skipped displaying broadcast/userlist callbacks visually to save reading time, but they remain 100% active and untouched from your previous code) ...
-        
-        // --- Sites & Ranges ---
+        else if (data === "adm_broadcast" && chatId === ADMIN_ID) {
+            adminState[chatId] = { action: 'wait_broadcast_notice' };
+            bot.sendMessage(chatId, "✏️ *সব ইউজারদের পাঠানোর জন্য মেসেজটি লিখুন:*", { parse_mode: 'Markdown' });
+            bot.answerCallbackQuery(query.id);
+        }
+        else if (data === "adm_users" && chatId === ADMIN_ID) {
+            adminState[chatId] = { action: 'wait_manage_userid' };
+            bot.sendMessage(chatId, "✏️ *Enter User ID to manage:*", { parse_mode: 'Markdown' });
+            bot.answerCallbackQuery(query.id);
+        }
+        else if (data.startsWith('adm_togban_') && chatId === ADMIN_ID) {
+            const targetId = data.split('_')[2];
+            const targetUser = await User.findOne({ id: String(targetId) });
+            if (targetUser) {
+                targetUser.banned = !targetUser.banned;
+                await targetUser.save();
+                bot.editMessageText(`✅ *User ${targetUser.banned ? 'BANNED' : 'UNBANNED'} successfully!*`, { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown' });
+            }
+            bot.answerCallbackQuery(query.id);
+        }
+        else if (data === "adm_userlist" && chatId === ADMIN_ID) {
+            bot.answerCallbackQuery(query.id, { text: "⏳ Preparing user list..." });
+            const users = await User.find({});
+            let userList = "👥 *USER LIST*\n\nID | Name | Bal\n-----------------------\n";
+            users.forEach(u => { userList += `${u.id} | ${u.first_name || 'N/A'} | ${u.balance || 0}\n`; });
+            const buffer = Buffer.from(userList, 'utf-8');
+            bot.sendDocument(chatId, buffer, {}, { filename: 'users.txt', contentType: 'text/plain' }).catch(()=>{});
+        }
+        else if (data === "adm_paycfg" && chatId === ADMIN_ID) {
+            const config = await getAppConfig();
+            let msg = `💳 *Payment Settings*\n\n💰 *Per OTP Earning:* \`${config.per_otp_rate}\` ৳\n📉 *Min Withdraw:* \`${config.min_withdraw}\` ৳\n\n💳 *Methods:* ${config.pay_methods.join(', ') || 'None'}`;
+            let kb = [
+                [{ text: "✏️ Edit Earning/OTP", callback_data: "adm_edit_otprate", style: "primary" }, { text: "✏️ Edit Min Withdraw", callback_data: "adm_edit_minwd", style: "primary" }],
+                [{ text: "➕ Add Method", callback_data: "adm_add_paym", style: "success" }, { text: "🗑️ Delete Method", callback_data: "adm_del_paym", style: "danger" }],
+                [{ text: "🔙 Back", callback_data: "admin_main", style: "danger" }]
+            ];
+            bot.editMessageText(msg, { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown', reply_markup: { inline_keyboard: kb } });
+        }
+        else if (data === "adm_edit_otprate" && chatId === ADMIN_ID) {
+            adminState[chatId] = { action: 'wait_otp_rate' }; bot.sendMessage(chatId, "✏️ *Enter new earning per OTP (৳):*", { parse_mode: 'Markdown' }); bot.answerCallbackQuery(query.id);
+        }
+        else if (data === "adm_edit_minwd" && chatId === ADMIN_ID) {
+            adminState[chatId] = { action: 'wait_min_wd' }; bot.sendMessage(chatId, "✏️ *Enter new minimum withdraw limit (৳):*", { parse_mode: 'Markdown' }); bot.answerCallbackQuery(query.id);
+        }
+        else if (data === "adm_add_paym" && chatId === ADMIN_ID) {
+            adminState[chatId] = { action: 'wait_pay_method_add' }; bot.sendMessage(chatId, "✏️ *Enter new payment method name:*", { parse_mode: 'Markdown' }); bot.answerCallbackQuery(query.id);
+        }
+        else if (data === "adm_del_paym" && chatId === ADMIN_ID) {
+            const config = await getAppConfig();
+            let kb = [];
+            config.pay_methods.forEach(m => { kb.push([{ text: `🗑️ ${m}`, callback_data: `admdel_m_${m}`, style: "danger" }]); });
+            kb.push([{ text: "🔙 Back", callback_data: "adm_paycfg", style: "primary" }]);
+            bot.editMessageText("📌 *Select method to delete:*", { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown', reply_markup: { inline_keyboard: kb } });
+        }
+        else if (data.startsWith('admdel_m_') && chatId === ADMIN_ID) {
+            const m = data.split('admdel_m_')[1];
+            const config = await getAppConfig();
+            config.pay_methods = config.pay_methods.filter(x => x !== m);
+            await saveAppConfig(config);
+            bot.editMessageText(`✅ Deleted '${m}'`, { chat_id: chatId, message_id: msgId, reply_markup: { inline_keyboard: [[{ text: "🔙 Back", callback_data: "adm_paycfg", style: "danger" }]] } });
+        }
+        // Site & Range Management
         else if (data === "adm_sites" && chatId === ADMIN_ID) {
             const ranges = await loadRanges();
             let inlineKeyboard = [];
@@ -804,23 +834,18 @@ bot.on('callback_query', async (query) => {
             const parts = data.split('_'); const plat = parts[2]; const country = parts.slice(3).join('_');
             const ranges = await loadRanges();
             const rangeData = ranges[plat][country];
-            
             const currentRange = typeof rangeData === 'string' ? rangeData : (rangeData ? rangeData.range : "Not set");
-            const currentPanel = typeof rangeData === 'string' ? 'stexsms' : (rangeData ? rangeData.panel : "stexsms");
             
             let inlineKeyboard = [
                 [{ text: "✏️ Edit Range", callback_data: `ar_ed_${plat}_${country}`, style: "primary" }, { text: "❌ Delete Country", callback_data: `ar_del_${plat}_${country}`, style: "danger" }],
                 [{ text: "🔙 Back", callback_data: `ar_p_${plat}`, style: "danger" }]
             ];
-            bot.editMessageText(`⚙️ *Platform:* ${plat}\n🌍 *Country:* ${country}\n🔌 *Panel:* ${currentPanel.toUpperCase()}\n🔢 *Current Range:* \`${currentRange}\``, { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown', reply_markup: { inline_keyboard: inlineKeyboard }});
+            bot.editMessageText(`⚙️ *Platform:* ${plat}\n🌍 *Country:* ${country}\n🔢 *Current Range:* \`${currentRange}\``, { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown', reply_markup: { inline_keyboard: inlineKeyboard }});
         }
         else if (data.startsWith('ar_ed_') && chatId === ADMIN_ID) {
             const parts = data.split('_'); const plat = parts[2]; const country = parts.slice(3).join('_');
-            adminState[chatId] = { action: 'wait_range_edit_panel', platform: plat, country: country };
-            
-            bot.editMessageText(`📌 কোন প্যানেলের রেঞ্জ আপডেট করবেন?`, { chat_id: chatId, message_id: msgId, reply_markup: {
-                inline_keyboard: [[{text: "Stexsms", callback_data:"edpan_stexsms"}, {text: "Voltxsms", callback_data:"edpan_voltxsms"}]]
-            }});
+            adminState[chatId] = { action: 'wait_range_edit', platform: plat, country: country };
+            bot.sendMessage(chatId, `✏️ *${country}* এর জন্য প্যানেলের নতুন রেঞ্জ টাইপ করুন:`);
             bot.answerCallbackQuery(query.id);
         }
         else if (data.startsWith('ar_del_') && chatId === ADMIN_ID) {
@@ -846,6 +871,26 @@ bot.on('callback_query', async (query) => {
             bot.sendMessage(chatId, `✏️ *আপনার ${method} Account ID / Number দিন:*`, { parse_mode: 'Markdown' });
             bot.answerCallbackQuery(query.id);
         }
+        else if (data.startsWith('wd_appr_') || data.startsWith('wd_canc_')) {
+            if (query.from.id !== ADMIN_ID) return bot.answerCallbackQuery(query.id, { text: "❌ Only Admin can do this!", show_alert: true });
+            const isApprove = data.startsWith('wd_appr_');
+            const wd_id = data.split('_')[2];
+            try {
+                const reqDoc = await Withdraw.findOne({ wd_id: wd_id });
+                if (!reqDoc || reqDoc.status !== 'pending') return bot.answerCallbackQuery(query.id, { text: "⚠️ Already processed.", show_alert: true });
+                if (isApprove) {
+                    reqDoc.status = 'approved'; await reqDoc.save();
+                    bot.editMessageText(query.message.text + "\n\n✅ *STATUS: APPROVED*", { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown' });
+                    bot.sendMessage(reqDoc.user_id, `🎉 *Withdrawal Approved!*\n\n💰 Amount: \`${reqDoc.amount}\` ৳\n💳 Method: ${reqDoc.method}`, { parse_mode: 'Markdown' }).catch(()=>{});
+                } else {
+                    reqDoc.status = 'rejected'; await reqDoc.save();
+                    const uDoc = await User.findOne({ id: reqDoc.user_id });
+                    if (uDoc) { uDoc.balance = parseFloat((uDoc.balance + reqDoc.amount).toFixed(2)); await uDoc.save(); }
+                    bot.editMessageText(query.message.text + "\n\n❌ *STATUS: REJECTED*", { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown' });
+                    bot.sendMessage(reqDoc.user_id, `❌ *Withdrawal Rejected!* Amount refunded.`, { parse_mode: 'Markdown' }).catch(()=>{});
+                }
+            } catch (e) {} bot.answerCallbackQuery(query.id);
+        }
 
         // --- User 2FA Controls ---
         else if (data === "add_2fa") {
@@ -860,6 +905,15 @@ bot.on('callback_query', async (query) => {
                 const token = authenticator.generate(saved2fa[index].secret);
                 const markup = { inline_keyboard: [[{ text: `  ${token}`, copy_text: { text: token }, style: "success" }]] };
                 bot.sendMessage(chatId, `🔐 *Live 2FA OTP Code:*\n\n\`${token}\``, { parse_mode: 'Markdown', reply_markup: markup });
+            }
+            bot.answerCallbackQuery(query.id);
+        }
+        else if (data.startsWith('del_2fa_')) {
+            const index = parseInt(data.split('_')[2]);
+            const saved2fa = await get2FA(chatId);
+            if (saved2fa[index]) {
+                saved2fa.splice(index, 1); await save2FA(chatId, saved2fa);
+                bot.editMessageText("✅ *2FA Secret ডিলিট করা হয়েছে!*", { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown' });
             }
             bot.answerCallbackQuery(query.id);
         }
@@ -900,8 +954,8 @@ bot.on('callback_query', async (query) => {
     } catch(e) { bot.answerCallbackQuery(query.id, { text: "⚠️ Error processing request!", show_alert: true }); }
 });
 
-Promise.all([loadPanelKeys()]).then(() => {
-    console.log("🔑 API settings loaded from DB.");
+Promise.all([loadPanelCookie()]).then(() => {
+    console.log("🍪 Stexsms Cookie loaded from DB.");
 });
 
-console.log("🚀 V12.0 Dual Panel System Booted Successfully!");
+console.log("🚀 Cookie System Update Successfully Booted!");
