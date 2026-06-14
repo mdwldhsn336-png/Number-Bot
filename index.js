@@ -15,7 +15,7 @@ const PORT = process.env.PORT || 3000;
 const SERVER_URL = process.env.SERVER_URL; 
 
 app.use(express.json());
-app.get('/', (req, res) => res.send('Premium Fire OTP Bot v21.0 (Callback Fix & Global Feed Toggle) is Running!'));
+app.get('/', (req, res) => res.send('Premium Fire OTP Bot v22.0 (Voltxsms Route Fixed) is Running!'));
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 
 // --- MongoDB Setup ---
@@ -99,7 +99,8 @@ let userState = {};
 // ==========================================
 const PANELS = {
     stexsms: { baseUrl: 'https://api.2oo9.cloud/MXS47FLFX0U/tness/@public/api' },
-    voltxsms: { baseUrl: 'https://api.2oo9.cloud/MXS47FLFXBU/tnevs/@public/api' }
+    // 🟢 SUPER FIX: Changed Voltxsms route from 'MXS47FLFXBU' to 'MXS47FLFX0U'
+    voltxsms: { baseUrl: 'https://api.2oo9.cloud/MXS47FLFX0U/tnevs/@public/api' }
 };
 
 let panelKeys = { stexsms: "MKMGV6W3B12", voltxsms: "" }; 
@@ -177,7 +178,7 @@ async function getAppConfig() {
         if (config.stexsms_on === undefined) config.stexsms_on = true;     
         if (config.voltxsms_on === undefined) config.voltxsms_on = true;   
         if (config.force_start === undefined) config.force_start = false;  
-        if (config.global_feed_on === undefined) config.global_feed_on = true; // 🟢 NEW
+        if (config.global_feed_on === undefined) config.global_feed_on = true; 
         return config;
     } catch(e) { 
         return { per_otp_rate: 5, min_withdraw: 50, pay_methods: ['Binance'], reward_system: true, stexsms_on: true, voltxsms_on: true, force_start: false, global_feed_on: true }; 
@@ -421,7 +422,7 @@ async function generateNewNumber(chatId, plat, country, panelNameInput = null, r
         let errTxt = "⚠️ *সার্ভার সাময়িক ব্যস্ত আছে। একটু পর আবার চেষ্টা করুন।*";
         
         if (chatId === ADMIN_ID) {
-            if (error.message.startsWith('NO_API_KEY')) {
+            if (error.message && error.message.startsWith('NO_API_KEY')) {
                 errTxt = `🚫 *API Key Missing:* ${panelName.toUpperCase()} এর API Key সেট করা নেই!`;
             } else if (error.response) {
                 errTxt = `⚠️ *Admin API Error (${error.response.status}):*\n\`${JSON.stringify(error.response.data)}\`\n\n📌 *API Key অথবা Range ID চেক করুন।*`;
@@ -521,7 +522,6 @@ setInterval(async () => {
                         
                         bot.sendMessage(session.chatId, `🎉 *New OTP Received* 🎉\n\n📱 *Platform:* ${platDisplay}\n🌍 *Country:* ${session.country}\n\n${boxNumber}${earningText}`, { parse_mode: 'Markdown', reply_markup: otpMarkup }).catch(()=>{});
                         
-                        // 🟢 IF GLOBAL FEED IS OFF -> Send Bot User's OTP to Group
                         if (!config.global_feed_on) {
                             const groupMsg = `🎉 *New OTP Received* 🎉\n\n📱 *Platform:* ${session.plat}\n🌍 *Country:* ${session.country}\n🎯 *Number:* \`${number}\`\n\n💬 *SMS:* \`${otpData.message}\``;
                             const groupMarkup = { 
@@ -549,7 +549,6 @@ setInterval(async () => {
     
     const config = await getAppConfig();
     
-    // 🟢 Global Feed OFF Checker
     if (!config.global_feed_on) {
         isPollingFeed = false;
         return;
@@ -850,6 +849,7 @@ bot.on('message', async (msg) => {
         }
         else if (text === "👤 ACCOUNT") {
             const uData = await ensureUser(msg.from);
+            const config = await getAppConfig();
             let balText = `💰 *Total Balance:* \`${parseFloat(uData.balance.toFixed(2))}\` ৳\n💸 *Today Earnings:* \`${parseFloat(uData.today_balance.toFixed(2))}\` ৳`;
             if (config.reward_system === false) balText = "";
 
@@ -891,7 +891,6 @@ bot.on('callback_query', async (query) => {
     const data = query.data;
     const msgId = query.message.message_id;
 
-    // 🟢 SUPER FIX: Always Answer Callback Query Fast to prevent hanging UI
     bot.answerCallbackQuery(query.id).catch(()=>{});
 
     try {
@@ -1046,7 +1045,7 @@ bot.on('callback_query', async (query) => {
             bot.editMessageText(`✅ Deleted '${m}'`, { chat_id: chatId, message_id: msgId, reply_markup: { inline_keyboard: [[{ text: "🔙 Back", callback_data: "adm_paycfg", style: "danger" }]] } }).catch(()=>{});
         }
         
-        // --- Sites & Ranges (FIXED UI FREEZE) ---
+        // --- Sites & Ranges (Callback properly answers now) ---
         else if (data === "adm_sites" && chatId === ADMIN_ID) {
             const ranges = await loadRanges() || {};
             let inlineKeyboard = [];
@@ -1231,7 +1230,7 @@ bot.on('callback_query', async (query) => {
 });
 
 Promise.all([loadPanelKeys()]).then(() => {
-    console.log("🔑 DB Settings Loaded. Default APIs injected.");
+    console.log("🔑 DB Settings Loaded.");
 });
 
-console.log("🚀 V21.0 Global Feed Toggle & Control Panel Booted Successfully!");
+console.log("🚀 V22.0 Voltxsms Fixed Booted Successfully!");
