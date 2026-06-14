@@ -15,7 +15,7 @@ const PORT = process.env.PORT || 3000;
 const SERVER_URL = process.env.SERVER_URL; 
 
 app.use(express.json());
-app.get('/', (req, res) => res.send('Premium Fire OTP Bot v14.0 (Dynamic API URL Fixed) is Running!'));
+app.get('/', (req, res) => res.send('Premium Fire OTP Bot v15.0 (Final Routing Fix & Super Fast) is Running!'));
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 
 // --- MongoDB Setup ---
@@ -92,11 +92,12 @@ let adminState = {};
 let userState = {};
 
 // ==========================================
-// 🔥 DUAL PANEL API SETUP (Dynamic URL FIX)
+// 🔥 DUAL PANEL API SETUP (FIXED ROUTES)
 // ==========================================
+// অরিজিনাল প্যানেল রুট। এখানে API Key বসবে না।
 const PANELS = {
-    stexsms: { path: 'tness' },
-    voltxsms: { path: 'tnevs' }
+    stexsms: { baseUrl: 'https://api.2oo9.cloud/MXS47FLFX0U/tness/@public/api' },
+    voltxsms: { baseUrl: 'https://api.2oo9.cloud/MXS47FLFXBU/tnevs/@public/api' }
 };
 
 let panelKeys = { stexsms: "", voltxsms: "" };
@@ -116,23 +117,20 @@ async function savePanelKey(panel, key) {
     await Setting.findOneAndUpdate({ key: 'panel_keys' }, { data: panelKeys }, { upsert: true });
 }
 
-// 🟢 FIX: Dynamic URL Generation based on the API Key
+// 🟢 FIX: API Key is only sent in headers, URL remains static based on the panel.
 async function panelRequest(method, endpoint, data = null, panelName = 'stexsms') {
     const key = panelKeys[panelName];
     if (!key) throw new Error(`NO_API_KEY_${panelName}`);
     
     const cleanKey = key.trim();
+    const url = `${PANELS[panelName].baseUrl}${endpoint}`;
     
-    // এখানে URL-এর মাঝে ডায়নামিক ভাবে API Key (cleanKey) বসে যাবে
-    const url = `https://api.2oo9.cloud/${cleanKey}/${PANELS[panelName].path}/@public/api${endpoint}`;
-    
-    // Cloudflare Anti-bot Bypass & Official Headers
+    // Official Headers format from panel documentation
     const headers = { 
-        'mauthapi': cleanKey, // ডকুমেন্টেশনের জন্য হেডারেও রাখা হলো
+        'mauthapi': cleanKey,
         'Content-Type': 'application/json',
         'Accept': 'application/json',
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Connection': 'keep-alive'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     };
     
     try {
@@ -1039,7 +1037,7 @@ bot.on('callback_query', async (query) => {
 });
 
 Promise.all([loadPanelKeys()]).then(() => {
-    console.log("🔑 Dynamic API URL logic loaded successfully.");
+    console.log("🔑 API settings loaded from DB.");
 });
 
-console.log("🚀 V14.0 System Booted Successfully!");
+console.log("🚀 V15.0 System Booted Successfully!");
