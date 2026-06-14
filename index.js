@@ -15,7 +15,7 @@ const PORT = process.env.PORT || 3000;
 const SERVER_URL = process.env.SERVER_URL; 
 
 app.use(express.json());
-app.get('/', (req, res) => res.send('Premium Fire OTP Bot v20.0 (Panel Switch & Force Start) is Running!'));
+app.get('/', (req, res) => res.send('Premium Fire OTP Bot v21.0 (Callback Fix & Global Feed Toggle) is Running!'));
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 
 // --- MongoDB Setup ---
@@ -102,7 +102,7 @@ const PANELS = {
     voltxsms: { baseUrl: 'https://api.2oo9.cloud/MXS47FLFXBU/tnevs/@public/api' }
 };
 
-let panelKeys = { stexsms: "MKMGV6W3B12", voltxsms: "" }; // 🟢 Your Default API Key Injected
+let panelKeys = { stexsms: "MKMGV6W3B12", voltxsms: "" }; 
 
 async function loadPanelKeys() {
     try {
@@ -174,12 +174,13 @@ async function getAppConfig() {
         if (config.min_withdraw === undefined) config.min_withdraw = 50;
         if (config.pay_methods === undefined) config.pay_methods = ['Binance'];
         if (config.reward_system === undefined) config.reward_system = true;
-        if (config.stexsms_on === undefined) config.stexsms_on = true;     // 🟢 New Panel Control
-        if (config.voltxsms_on === undefined) config.voltxsms_on = true;   // 🟢 New Panel Control
-        if (config.force_start === undefined) config.force_start = false;  // 🟢 Force Start Control
+        if (config.stexsms_on === undefined) config.stexsms_on = true;     
+        if (config.voltxsms_on === undefined) config.voltxsms_on = true;   
+        if (config.force_start === undefined) config.force_start = false;  
+        if (config.global_feed_on === undefined) config.global_feed_on = true; // 🟢 NEW
         return config;
     } catch(e) { 
-        return { per_otp_rate: 5, min_withdraw: 50, pay_methods: ['Binance'], reward_system: true, stexsms_on: true, voltxsms_on: true, force_start: false }; 
+        return { per_otp_rate: 5, min_withdraw: 50, pay_methods: ['Binance'], reward_system: true, stexsms_on: true, voltxsms_on: true, force_start: false, global_feed_on: true }; 
     }
 }
 async function saveAppConfig(data) { await Setting.findOneAndUpdate({ key: 'app_config' }, { data }, { upsert: true }); }
@@ -352,7 +353,6 @@ async function generateNewNumber(chatId, plat, country, panelNameInput = null, r
         panelName = typeof rangeData === 'string' ? 'stexsms' : (rangeData.panel || 'stexsms');
     }
 
-    // 🟢 Panel ON/OFF Check
     if (panelName === 'stexsms' && !config.stexsms_on) {
         const errTxt = "❌ *Stexsms প্যানেলটি অ্যাডমিন অফ করে রেখেছেন।*";
         if (msgIdToEdit) bot.editMessageText(errTxt, {chat_id: chatId, message_id: msgIdToEdit, parse_mode: 'Markdown'}).catch(()=>{});
@@ -506,6 +506,9 @@ setInterval(async () => {
                         const platDisplay = `${getPlatIcon(session.plat)} ${session.plat.charAt(0).toUpperCase() + session.plat.slice(1)}`;
                         const boxNumber = `╔════════════════════╗\n║ 📱 \`${formatPhone}\` ║ LN- ${detectedLang}\n╚════════════════════╝`;
                         
+                        const safeSid = (session.plat || 'App').replace(/[^a-zA-Z0-9]/g, '');
+                        const deepLinkUrl = `https://t.me/${botUsername}?start=gn_${pName}_${number}_${safeSid}`;
+
                         const otpMarkup = { 
                             inline_keyboard: [
                                 [{ text: ` ${otpCode}`, copy_text: { text: otpCode }, style: "success" }],
@@ -518,6 +521,18 @@ setInterval(async () => {
                         
                         bot.sendMessage(session.chatId, `🎉 *New OTP Received* 🎉\n\n📱 *Platform:* ${platDisplay}\n🌍 *Country:* ${session.country}\n\n${boxNumber}${earningText}`, { parse_mode: 'Markdown', reply_markup: otpMarkup }).catch(()=>{});
                         
+                        // 🟢 IF GLOBAL FEED IS OFF -> Send Bot User's OTP to Group
+                        if (!config.global_feed_on) {
+                            const groupMsg = `🎉 *New OTP Received* 🎉\n\n📱 *Platform:* ${session.plat}\n🌍 *Country:* ${session.country}\n🎯 *Number:* \`${number}\`\n\n💬 *SMS:* \`${otpData.message}\``;
+                            const groupMarkup = { 
+                                inline_keyboard: [
+                                    [{ text: `  ${otpCode}`, copy_text: { text: otpCode }, style: "success" }],
+                                    [{ text: "🚀 Get Number From This Range", url: deepLinkUrl, style: "primary" }]
+                                ] 
+                            };
+                            bot.sendMessage(OTP_GROUP_ID, groupMsg, {parse_mode: 'Markdown', reply_markup: groupMarkup}).catch(()=>{});
+                        }
+
                         activeNumbers.delete(number);
                     }
                 }
@@ -533,6 +548,13 @@ setInterval(async () => {
     isPollingFeed = true;
     
     const config = await getAppConfig();
+    
+    // 🟢 Global Feed OFF Checker
+    if (!config.global_feed_on) {
+        isPollingFeed = false;
+        return;
+    }
+
     const rangesDb = await loadRanges();
 
     for (const pName of ['stexsms', 'voltxsms']) {
@@ -644,7 +666,6 @@ bot.on('message', async (msg) => {
     const config = await getAppConfig();
     let checkU = await User.findOne({ id: String(chatId) });
     
-    // 🟢 Force /start System
     if (config.force_start && !checkU && text !== '/start') {
         return bot.sendMessage(chatId, "⚠️ *বটটি ব্যবহার করতে প্রথমে /start বাটনে ক্লিক করুন!*", { parse_mode: 'Markdown' });
     }
@@ -870,21 +891,24 @@ bot.on('callback_query', async (query) => {
     const data = query.data;
     const msgId = query.message.message_id;
 
+    // 🟢 SUPER FIX: Always Answer Callback Query Fast to prevent hanging UI
+    bot.answerCallbackQuery(query.id).catch(()=>{});
+
     try {
         if (data === "admin_main" && chatId === ADMIN_ID) {
-            bot.editMessageText("🛠 *Admin Control Panel*\n\nSelect an option below:", { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown', reply_markup: getAdminMenu() });
+            bot.editMessageText("🛠 *Admin Control Panel*\n\nSelect an option below:", { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown', reply_markup: getAdminMenu() }).catch(()=>{});
         }
         
-        // 🟢 NEW: Bot Settings Menu (Panel ON/OFF + Force Start)
         else if (data === "adm_bot_settings" && chatId === ADMIN_ID) {
             const config = await getAppConfig();
             let kb = [
                 [{ text: `⚙️ Stexsms: ${config.stexsms_on ? "ON 🟢" : "OFF 🔴"}`, callback_data: "tog_stexsms" }],
                 [{ text: `⚙️ Voltxsms: ${config.voltxsms_on ? "ON 🟢" : "OFF 🔴"}`, callback_data: "tog_voltxsms" }],
                 [{ text: `🚀 Force /start: ${config.force_start ? "ON 🟢" : "OFF 🔴"}`, callback_data: "tog_forcestart" }],
+                [{ text: `🌐 Global Live OTP: ${config.global_feed_on ? "ON 🟢" : "OFF 🔴"}`, callback_data: "tog_globalfeed" }],
                 [{ text: "🔙 Back", callback_data: "admin_main", style: "danger" }]
             ];
-            bot.editMessageText("⚙️ *Bot Settings*\n\nপ্যানেল এবং অন্যান্য সেটিংস অন/অফ করুন:", { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown', reply_markup: { inline_keyboard: kb } });
+            bot.editMessageText("⚙️ *Bot Settings*\n\nপ্যানেল এবং অন্যান্য সেটিংস অন/অফ করুন:", { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown', reply_markup: { inline_keyboard: kb } }).catch(()=>{});
         }
         else if (data.startsWith("tog_") && chatId === ADMIN_ID) {
             const key = data.split('_')[1];
@@ -892,15 +916,17 @@ bot.on('callback_query', async (query) => {
             if (key === 'stexsms') config.stexsms_on = !config.stexsms_on;
             if (key === 'voltxsms') config.voltxsms_on = !config.voltxsms_on;
             if (key === 'forcestart') config.force_start = !config.force_start;
+            if (key === 'globalfeed') config.global_feed_on = !config.global_feed_on;
             await saveAppConfig(config);
 
             let kb = [
                 [{ text: `⚙️ Stexsms: ${config.stexsms_on ? "ON 🟢" : "OFF 🔴"}`, callback_data: "tog_stexsms" }],
                 [{ text: `⚙️ Voltxsms: ${config.voltxsms_on ? "ON 🟢" : "OFF 🔴"}`, callback_data: "tog_voltxsms" }],
                 [{ text: `🚀 Force /start: ${config.force_start ? "ON 🟢" : "OFF 🔴"}`, callback_data: "tog_forcestart" }],
+                [{ text: `🌐 Global Live OTP: ${config.global_feed_on ? "ON 🟢" : "OFF 🔴"}`, callback_data: "tog_globalfeed" }],
                 [{ text: "🔙 Back", callback_data: "admin_main", style: "danger" }]
             ];
-            bot.editMessageText("⚙️ *Bot Settings*\n\nপ্যানেল এবং অন্যান্য সেটিংস অন/অফ করুন:", { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown', reply_markup: { inline_keyboard: kb } });
+            bot.editMessageText("⚙️ *Bot Settings*\n\nপ্যানেল এবং অন্যান্য সেটিংস অন/অফ করুন:", { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown', reply_markup: { inline_keyboard: kb } }).catch(()=>{});
         }
 
         // --- Dual Panel API Keys ---
@@ -913,13 +939,30 @@ bot.on('callback_query', async (query) => {
                 [{ text: "✏️ Set Stexsms Key", callback_data: "set_key_stexsms", style: "primary" }, { text: "✏️ Set Voltxsms Key", callback_data: "set_key_voltxsms", style: "primary" }],
                 [{ text: "🔙 Back", callback_data: "admin_main", style: "danger" }]
             ];
-            bot.editMessageText(msgText, { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown', reply_markup: { inline_keyboard: inlineKeyboard } });
+            bot.editMessageText(msgText, { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown', reply_markup: { inline_keyboard: inlineKeyboard } }).catch(()=>{});
         }
         else if (data.startsWith("set_key_") && chatId === ADMIN_ID) {
             const panelName = data.split('_')[2];
             adminState[chatId] = { action: 'wait_apikey_add', panel: panelName };
             bot.sendMessage(chatId, `✏️ *${panelName.toUpperCase()} Panel* এর API Key টি পেস্ট করুন:`, { parse_mode: 'Markdown' });
-            bot.answerCallbackQuery(query.id);
+        }
+
+        // --- Panel Selection during Range Add/Edit ---
+        else if (data.startsWith('setpan_') && chatId === ADMIN_ID) {
+            const panel = data.split('_')[1];
+            if (adminState[chatId] && adminState[chatId].country) {
+                adminState[chatId].panel = panel;
+                adminState[chatId].action = 'wait_range_val';
+                bot.editMessageText(`✅ Panel: ${panel.toUpperCase()}\n\n✏️ এবার রেঞ্জ টাইপ করুন (যেমন: 26134 বা 22501XXX):`, {chat_id: chatId, message_id: msgId}).catch(()=>{});
+            }
+        }
+        else if (data.startsWith('edpan_') && chatId === ADMIN_ID) {
+            const p = data.split('_')[1];
+            if(adminState[chatId] && adminState[chatId].platform) {
+                adminState[chatId].panel = p;
+                adminState[chatId].action = 'wait_range_edit';
+                bot.editMessageText(`✅ Panel: ${p.toUpperCase()}\n\n✏️ এবার নতুন রেঞ্জ টাইপ করুন:`, {chat_id: chatId, message_id: msgId}).catch(()=>{});
+            }
         }
 
         // --- Dashboard & Admin Submenus ---
@@ -928,17 +971,15 @@ bot.on('callback_query', async (query) => {
             const statDoc = await Setting.findOne({ key: 'global_stats' });
             const gStats = statDoc && statDoc.data ? statDoc.data : { success: 0, pending: 0, failed: 0 };
             const dashText = `📊 *BOT DASHBOARD*\n\n👥 *Total Users:* \`${totalUsers}\`\n\n📈 *Order Stats:*\n✅ Success: \`${gStats.success || 0}\`\n⏳ Pending: \`${gStats.pending || 0}\`\n❌ Failed: \`${gStats.failed || 0}\``;
-            bot.editMessageText(dashText, { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: "🔙 Back", callback_data: "admin_main", style: "danger" }]] }});
+            bot.editMessageText(dashText, { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: "🔙 Back", callback_data: "admin_main", style: "danger" }]] }}).catch(()=>{});
         }
         else if (data === "adm_broadcast" && chatId === ADMIN_ID) {
             adminState[chatId] = { action: 'wait_broadcast_notice' };
             bot.sendMessage(chatId, "✏️ *সব ইউজারদের পাঠানোর জন্য মেসেজটি লিখুন:*", { parse_mode: 'Markdown' });
-            bot.answerCallbackQuery(query.id);
         }
         else if (data === "adm_users" && chatId === ADMIN_ID) {
             adminState[chatId] = { action: 'wait_manage_userid' };
             bot.sendMessage(chatId, "✏️ *Enter User ID to manage:*", { parse_mode: 'Markdown' });
-            bot.answerCallbackQuery(query.id);
         }
         else if (data.startsWith('adm_togban_') && chatId === ADMIN_ID) {
             const targetId = data.split('_')[2];
@@ -946,12 +987,10 @@ bot.on('callback_query', async (query) => {
             if (targetUser) {
                 targetUser.banned = !targetUser.banned;
                 await targetUser.save();
-                bot.editMessageText(`✅ *User ${targetUser.banned ? 'BANNED' : 'UNBANNED'} successfully!*`, { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown' });
+                bot.editMessageText(`✅ *User ${targetUser.banned ? 'BANNED' : 'UNBANNED'} successfully!*`, { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown' }).catch(()=>{});
             }
-            bot.answerCallbackQuery(query.id);
         }
         else if (data === "adm_userlist" && chatId === ADMIN_ID) {
-            bot.answerCallbackQuery(query.id, { text: "⏳ Preparing user list..." });
             const users = await User.find({});
             let userList = "👥 *USER LIST*\n\nID | Name | Bal\n-----------------------\n";
             users.forEach(u => { userList += `${u.id} | ${u.first_name || 'N/A'} | ${u.balance || 0}\n`; });
@@ -968,13 +1007,12 @@ bot.on('callback_query', async (query) => {
                 [{ text: "➕ Add Method", callback_data: "adm_add_paym", style: "success" }, { text: "🗑️ Delete Method", callback_data: "adm_del_paym", style: "danger" }],
                 [{ text: "🔙 Back", callback_data: "admin_main", style: "danger" }]
             ];
-            bot.editMessageText(msg, { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown', reply_markup: { inline_keyboard: kb } });
+            bot.editMessageText(msg, { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown', reply_markup: { inline_keyboard: kb } }).catch(()=>{});
         }
         else if (data === "adm_tog_reward" && chatId === ADMIN_ID) {
             const config = await getAppConfig();
             config.reward_system = !config.reward_system;
             await saveAppConfig(config);
-            bot.answerCallbackQuery(query.id, { text: `Reward System turned ${config.reward_system ? 'ON' : 'OFF'}`, show_alert: false });
             let msg = `💳 *Payment Settings*\n\n💰 *Per OTP Earning:* \`${config.per_otp_rate}\` ৳\n📉 *Min Withdraw:* \`${config.min_withdraw}\` ৳\n\n💳 *Methods:* ${config.pay_methods.join(', ') || 'None'}`;
             let kb = [
                 [{ text: `🎁 Reward System: ${config.reward_system ? "ON 🟢" : "OFF 🔴"}`, callback_data: "adm_tog_reward", style: "primary" }],
@@ -982,31 +1020,176 @@ bot.on('callback_query', async (query) => {
                 [{ text: "➕ Add Method", callback_data: "adm_add_paym", style: "success" }, { text: "🗑️ Delete Method", callback_data: "adm_del_paym", style: "danger" }],
                 [{ text: "🔙 Back", callback_data: "admin_main", style: "danger" }]
             ];
-            bot.editMessageText(msg, { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown', reply_markup: { inline_keyboard: kb } });
+            bot.editMessageText(msg, { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown', reply_markup: { inline_keyboard: kb } }).catch(()=>{});
+        }
+        else if (data === "adm_edit_otprate" && chatId === ADMIN_ID) {
+            adminState[chatId] = { action: 'wait_otp_rate' }; bot.sendMessage(chatId, "✏️ *Enter new earning per OTP (৳):*", { parse_mode: 'Markdown' });
+        }
+        else if (data === "adm_edit_minwd" && chatId === ADMIN_ID) {
+            adminState[chatId] = { action: 'wait_min_wd' }; bot.sendMessage(chatId, "✏️ *Enter new minimum withdraw limit (৳):*", { parse_mode: 'Markdown' });
+        }
+        else if (data === "adm_add_paym" && chatId === ADMIN_ID) {
+            adminState[chatId] = { action: 'wait_pay_method_add' }; bot.sendMessage(chatId, "✏️ *Enter new payment method name:*", { parse_mode: 'Markdown' });
+        }
+        else if (data === "adm_del_paym" && chatId === ADMIN_ID) {
+            const config = await getAppConfig();
+            let kb = [];
+            config.pay_methods.forEach(m => { kb.push([{ text: `🗑️ ${m}`, callback_data: `admdel_m_${m}`, style: "danger" }]); });
+            kb.push([{ text: "🔙 Back", callback_data: "adm_paycfg", style: "primary" }]);
+            bot.editMessageText("📌 *Select method to delete:*", { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown', reply_markup: { inline_keyboard: kb } }).catch(()=>{});
+        }
+        else if (data.startsWith('admdel_m_') && chatId === ADMIN_ID) {
+            const m = data.split('admdel_m_')[1];
+            const config = await getAppConfig();
+            config.pay_methods = config.pay_methods.filter(x => x !== m);
+            await saveAppConfig(config);
+            bot.editMessageText(`✅ Deleted '${m}'`, { chat_id: chatId, message_id: msgId, reply_markup: { inline_keyboard: [[{ text: "🔙 Back", callback_data: "adm_paycfg", style: "danger" }]] } }).catch(()=>{});
         }
         
+        // --- Sites & Ranges (FIXED UI FREEZE) ---
+        else if (data === "adm_sites" && chatId === ADMIN_ID) {
+            const ranges = await loadRanges() || {};
+            let inlineKeyboard = [];
+            for (const plat of Object.keys(ranges)) {
+                inlineKeyboard.push([{ text: `❌ Delete ${getPlatIcon(plat)} ${plat}`, callback_data: `del_site_${plat}`, style: "danger" }]);
+            }
+            inlineKeyboard.push([{ text: "➕ Add New Site", callback_data: "add_site", style: "success" }]);
+            inlineKeyboard.push([{ text: "🔙 Back", callback_data: "admin_main", style: "danger" }]);
+            bot.editMessageText("🌐 *Manage Sites*\n\nসাইট ডিলিট করতে ক্রসে ক্লিক করুন:", { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown', reply_markup: { inline_keyboard: inlineKeyboard }}).catch(()=>{});
+        }
+        else if (data === "add_site" && chatId === ADMIN_ID) {
+            adminState[chatId] = { action: 'wait_site_add' }; 
+            bot.sendMessage(chatId, "✏️ নতুন সাইটের নাম দিন:");
+        }
+        else if (data.startsWith('del_site_') && chatId === ADMIN_ID) {
+            const plat = data.split('del_site_')[1];
+            const ranges = await loadRanges() || {};
+            if(ranges[plat]) { delete ranges[plat]; await saveRanges(ranges); }
+            bot.editMessageText(`✅ ${plat} ডিলিট করা হয়েছে।`, { chat_id: chatId, message_id: msgId, reply_markup: { inline_keyboard: [[{ text: "🔙 Back", callback_data: "adm_sites", style: "danger" }]] } }).catch(()=>{});
+        }
+        else if (data === "adm_ranges" && chatId === ADMIN_ID) {
+            const ranges = await loadRanges() || {};
+            let inlineKeyboard = [];
+            for (const plat of Object.keys(ranges)) {
+                inlineKeyboard.push([{ text: `${getPlatIcon(plat)} ${plat}`, callback_data: `ar_p_${plat}`, style: "primary" }]);
+            }
+            inlineKeyboard.push([{ text: "🔙 Back", callback_data: "admin_main", style: "danger" }]);
+            bot.editMessageText("⚙️ *Select Site to Manage Ranges*", { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown', reply_markup: { inline_keyboard: inlineKeyboard }}).catch(()=>{});
+        }
+        else if (data.startsWith('ar_p_') && chatId === ADMIN_ID) {
+            const plat = data.split('_').slice(2).join('_');
+            const ranges = await loadRanges() || {};
+            let inlineKeyboard = [];
+            if (ranges[plat]) {
+                for (const country of Object.keys(ranges[plat])) { inlineKeyboard.push([{ text: `🌍 ${country}`, callback_data: `ar_c_${plat}_${country}`, style: "primary" }]); }
+            }
+            inlineKeyboard.push([{ text: "➕ Add Country & Range", callback_data: `ar_add_${plat}`, style: "success" }]);
+            inlineKeyboard.push([{ text: "🔙 Back", callback_data: "adm_ranges", style: "danger" }]);
+            bot.editMessageText(`⚙️ *Manage Countries: ${getPlatIcon(plat)} ${plat}*`, { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown', reply_markup: { inline_keyboard: inlineKeyboard }}).catch(()=>{});
+        }
+        else if (data.startsWith('ar_add_') && chatId === ADMIN_ID) {
+            const plat = data.split('_').slice(2).join('_');
+            adminState[chatId] = { action: 'wait_country_name', platform: plat };
+            bot.sendMessage(chatId, "✏️ নতুন কান্ট্রির নাম ও ফ্ল্যাগ দিন (যেমন: 🇧🇩 Bangladesh):");
+        }
+        else if (data.startsWith('ar_c_') && chatId === ADMIN_ID) {
+            const parts = data.split('_'); const plat = parts[2]; const country = parts.slice(3).join('_');
+            const ranges = await loadRanges() || {};
+            const rangeData = ranges[plat]?.[country];
+            
+            const currentRange = typeof rangeData === 'string' ? rangeData : (rangeData ? rangeData.range : "Not set");
+            const currentPanel = typeof rangeData === 'string' ? 'stexsms' : (rangeData ? rangeData.panel : "stexsms");
+            
+            let inlineKeyboard = [
+                [{ text: "✏️ Edit Range", callback_data: `ar_ed_${plat}_${country}`, style: "primary" }, { text: "❌ Delete Country", callback_data: `ar_del_${plat}_${country}`, style: "danger" }],
+                [{ text: "🔙 Back", callback_data: `ar_p_${plat}`, style: "danger" }]
+            ];
+            bot.editMessageText(`⚙️ *Platform:* ${plat}\n🌍 *Country:* ${country}\n🔌 *Panel:* ${currentPanel.toUpperCase()}\n🔢 *Current Range:* \`${currentRange}\``, { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown', reply_markup: { inline_keyboard: inlineKeyboard }}).catch(()=>{});
+        }
+        else if (data.startsWith('ar_ed_') && chatId === ADMIN_ID) {
+            const parts = data.split('_'); const plat = parts[2]; const country = parts.slice(3).join('_');
+            adminState[chatId] = { action: 'wait_range_edit_panel', platform: plat, country: country };
+            
+            bot.editMessageText(`📌 কোন প্যানেলের রেঞ্জ আপডেট করবেন?`, { chat_id: chatId, message_id: msgId, reply_markup: {
+                inline_keyboard: [[{text: "Stexsms", callback_data:"edpan_stexsms"}, {text: "Voltxsms", callback_data:"edpan_voltxsms"}]]
+            }}).catch(()=>{});
+        }
+        else if (data.startsWith('ar_del_') && chatId === ADMIN_ID) {
+            const parts = data.split('_'); const plat = parts[2]; const country = parts.slice(3).join('_');
+            const ranges = await loadRanges() || {};
+            if (ranges[plat] && ranges[plat][country]) { delete ranges[plat][country]; await saveRanges(ranges); }
+            bot.editMessageText(`✅ কান্ট্রি ও রেঞ্জ ডিলিট করা হয়েছে।`, { chat_id: chatId, message_id: msgId, reply_markup: { inline_keyboard: [[{ text: "🔙 Back", callback_data: `ar_p_${plat}`, style: "danger" }]] } }).catch(()=>{});
+        }
+
         // --- Withdraw Controls ---
         else if (data === "wd_start") {
             const config = await getAppConfig();
-            if (config.reward_system === false) return bot.answerCallbackQuery(query.id, { text: "⚠️ Reward system is currently disabled.", show_alert: true });
+            if (config.reward_system === false) {
+                bot.sendMessage(chatId, "⚠️ Reward system is currently disabled.");
+                return;
+            }
             
             let methods = config.pay_methods || [];
-            if(methods.length === 0) return bot.answerCallbackQuery(query.id, { text: "⚠️ No payment methods available.", show_alert: true });
+            if(methods.length === 0) {
+                bot.sendMessage(chatId, "⚠️ No payment methods available.");
+                return;
+            }
             let inlineKeyboard = [];
             methods.forEach(m => { inlineKeyboard.push([{ text: `💳 ${m}`, callback_data: `wd_m_${m}`, style: "primary" }]); });
             bot.sendMessage(chatId, "📌 *Select Payment Method:*", { parse_mode: 'Markdown', reply_markup: { inline_keyboard: inlineKeyboard } });
-            bot.answerCallbackQuery(query.id);
         }
         else if (data.startsWith('wd_m_')) {
             const method = data.split('wd_m_')[1];
             userState[chatId] = { action: 'wait_wd_id', method: method };
             bot.sendMessage(chatId, `✏️ *আপনার ${method} Account ID / Number দিন:*`, { parse_mode: 'Markdown' });
-            bot.answerCallbackQuery(query.id);
+        }
+        else if (data.startsWith('wd_appr_') || data.startsWith('wd_canc_')) {
+            if (query.from.id !== ADMIN_ID) return;
+            const isApprove = data.startsWith('wd_appr_');
+            const wd_id = data.split('_')[2];
+            try {
+                const reqDoc = await Withdraw.findOne({ wd_id: wd_id });
+                if (!reqDoc || reqDoc.status !== 'pending') return;
+                if (isApprove) {
+                    reqDoc.status = 'approved'; await reqDoc.save();
+                    bot.editMessageText(query.message.text + "\n\n✅ *STATUS: APPROVED*", { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown' }).catch(()=>{});
+                    bot.sendMessage(reqDoc.user_id, `🎉 *Withdrawal Approved!*\n\n💰 Amount: \`${reqDoc.amount}\` ৳\n💳 Method: ${reqDoc.method}`, { parse_mode: 'Markdown' }).catch(()=>{});
+                } else {
+                    reqDoc.status = 'rejected'; await reqDoc.save();
+                    const uDoc = await User.findOne({ id: reqDoc.user_id });
+                    if (uDoc) { uDoc.balance = parseFloat((uDoc.balance + reqDoc.amount).toFixed(2)); await uDoc.save(); }
+                    bot.editMessageText(query.message.text + "\n\n❌ *STATUS: REJECTED*", { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown' }).catch(()=>{});
+                    bot.sendMessage(reqDoc.user_id, `❌ *Withdrawal Rejected!* Amount refunded.`, { parse_mode: 'Markdown' }).catch(()=>{});
+                }
+            } catch (e) {}
+        }
+
+        // --- User 2FA Controls ---
+        else if (data === "add_2fa") {
+            userState[chatId] = { action: 'wait_2fa_secret' };
+            bot.sendMessage(chatId, "✏️ *আপনার 2FA Secret Key (Base32 format) টি পাঠান:*", { parse_mode: 'Markdown' });
+        }
+        else if (data.startsWith('get_2fa_')) {
+            const index = parseInt(data.split('_')[2]);
+            const saved2fa = await get2FA(chatId);
+            if (saved2fa[index]) {
+                const token = authenticator.generate(saved2fa[index].secret);
+                const markup = { inline_keyboard: [[{ text: `  ${token}`, copy_text: { text: token }, style: "success" }]] };
+                bot.sendMessage(chatId, `🔐 *Live 2FA OTP Code:*\n\n\`${token}\``, { parse_mode: 'Markdown', reply_markup: markup });
+            }
+        }
+        else if (data.startsWith('del_2fa_')) {
+            const index = parseInt(data.split('_')[2]);
+            const saved2fa = await get2FA(chatId);
+            if (saved2fa[index]) {
+                saved2fa.splice(index, 1); await save2FA(chatId, saved2fa);
+                bot.editMessageText("✅ *2FA Secret ডিলিট করা হয়েছে!*", { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown' }).catch(()=>{});
+            }
         }
 
         // --- User Fast Number Flows ---
         else if (data.startsWith('u_site_')) {
-            const plat = data.split('u_site_')[1];
+            const plat = data.split('_').slice(2).join('_');
             const ranges = await loadRanges();
             let inlineKeyboard = []; let row = [];
             for (const country of Object.keys(ranges[plat] || {})) {
@@ -1014,13 +1197,12 @@ bot.on('callback_query', async (query) => {
                 if (row.length === 2) { inlineKeyboard.push(row); row = []; }
             }
             if (row.length > 0) inlineKeyboard.push(row);
-            bot.editMessageText(`📌 *Select Country for ${getPlatIcon(plat)} ${plat.toUpperCase()}:*`, { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown', reply_markup: { inline_keyboard: inlineKeyboard }});
+            bot.editMessageText(`📌 *Select Country for ${getPlatIcon(plat)} ${plat.toUpperCase()}:*`, { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown', reply_markup: { inline_keyboard: inlineKeyboard }}).catch(()=>{});
         }
         else if (data.startsWith('u_cntry_')) {
             const parts = data.split('_'); const plat = parts[2]; const country = parts.slice(3).join('_');
             bot.deleteMessage(chatId, msgId).catch(()=>{});
             await generateNewNumber(chatId, plat, country, null, null, null);
-            bot.answerCallbackQuery(query.id);
         }
         else if (data.startsWith('cancel_')) {
             const num = data.split('_')[1];
@@ -1032,9 +1214,7 @@ bot.on('callback_query', async (query) => {
             } else { 
                 bot.editMessageText("❌ *Session Expired or Already Processed.*", { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown' }).catch(()=>{}); 
             }
-            bot.answerCallbackQuery(query.id);
         }
-        // 🟢 FIX: Directly generates new number exactly as requested
         else if (data === "get_new_num") {
             const lastSession = userLastSession.get(chatId);
             if (lastSession) {
@@ -1044,13 +1224,14 @@ bot.on('callback_query', async (query) => {
             } else {
                 bot.sendMessage(chatId, "📌 *Session expired. Go to GET NUMBER from menu to start again.*", { parse_mode: 'Markdown' });
             }
-            bot.answerCallbackQuery(query.id);
         }
-    } catch(e) { bot.answerCallbackQuery(query.id, { text: "⚠️ Error processing request!", show_alert: true }); }
+    } catch(e) { 
+        console.error("Callback Error:", e);
+    }
 });
 
 Promise.all([loadPanelKeys()]).then(() => {
     console.log("🔑 DB Settings Loaded. Default APIs injected.");
 });
 
-console.log("🚀 V20.0 Control Panel System Booted Successfully!");
+console.log("🚀 V21.0 Global Feed Toggle & Control Panel Booted Successfully!");
