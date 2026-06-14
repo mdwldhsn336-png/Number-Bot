@@ -15,7 +15,7 @@ const PORT = process.env.PORT || 3000;
 const SERVER_URL = process.env.SERVER_URL; 
 
 app.use(express.json());
-app.get('/', (req, res) => res.send('Premium Fire OTP Bot v11.5 (Global Feed, Admin & Cookie Fixed) is Running!'));
+app.get('/', (req, res) => res.send('Premium Fire OTP Bot v11.6 (Cookie Auth Fixed) is Running!'));
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 
 // --- MongoDB Setup ---
@@ -92,9 +92,8 @@ let adminState = {};
 let userState = {};
 
 // ==========================================
-// 🔥 NEW PANEL API SETUP (STEXSMS COOKIE BASED)
+// 🔥 NEW PANEL API SETUP (STEXSMS COOKIE BASED - FIXED)
 // ==========================================
-// ⚠️ Stexsms এর সঠিক API URL এখানে দিন (যদি আলাদা হয়)
 const PANEL_BASE_URL = process.env.PANEL_BASE_URL || 'https://api.2oo9.cloud/MXS47FLFXBU/tness/@public/api'; 
 let panelCookie = process.env.PANEL_COOKIE || "";
 
@@ -111,18 +110,32 @@ async function savePanelCookie(cookie) {
 }
 
 async function panelRequest(method, endpoint, data = null) {
-    // API Key এর বদলে Cookie পাঠানো হচ্ছে
+    // Cookie থেকে টোকেন আলাদা করা হচ্ছে
+    let extractedToken = panelCookie;
+    if (panelCookie && panelCookie.includes("mauth=")) {
+        const match = panelCookie.match(/mauth=([^;]+)/);
+        if (match) extractedToken = match[1];
+    }
+
+    // Cookie এর সাথে টোকেনটিকে mauthapi হিসেবে পাঠানো হচ্ছে (এটিই মূল ট্রিক)
     const headers = { 
         'Cookie': panelCookie,
+        'Authorization': `Bearer ${extractedToken}`,
+        'mauthapi': extractedToken,
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'application/json'
+        'Accept': 'application/json, text/plain, */*',
+        'Content-Type': 'application/json'
     };
     const url = `${PANEL_BASE_URL}${endpoint}`;
     
     try {
         if(method === 'post') return await axios.post(url, data, { headers, timeout: 15000 });
         return await axios.get(url, { headers, timeout: 15000 });
-    } catch (e) { throw e; }
+    } catch (e) { 
+        // এরর লগ প্রিন্ট করা হচ্ছে যাতে টার্মিনালে দেখা যায় প্যানেল কী বলছে
+        console.error(`❌ Panel API Error [${method.toUpperCase()} ${endpoint}]:`, e.response ? e.response.data : e.message);
+        throw e; 
+    }
 }
 
 // ==========================================
