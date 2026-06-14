@@ -15,7 +15,7 @@ const PORT = process.env.PORT || 3000;
 const SERVER_URL = process.env.SERVER_URL; 
 
 app.use(express.json());
-app.get('/', (req, res) => res.send('Premium Fire OTP Bot v15.0 (Final Routing Fix & Super Fast) is Running!'));
+app.get('/', (req, res) => res.send('Premium Fire OTP Bot v16.0 (Multi-Tasking & Super Fast) is Running!'));
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 
 // --- MongoDB Setup ---
@@ -94,7 +94,6 @@ let userState = {};
 // ==========================================
 // 🔥 DUAL PANEL API SETUP (FIXED ROUTES)
 // ==========================================
-// অরিজিনাল প্যানেল রুট। এখানে API Key বসবে না।
 const PANELS = {
     stexsms: { baseUrl: 'https://api.2oo9.cloud/MXS47FLFX0U/tness/@public/api' },
     voltxsms: { baseUrl: 'https://api.2oo9.cloud/MXS47FLFXBU/tnevs/@public/api' }
@@ -117,7 +116,7 @@ async function savePanelKey(panel, key) {
     await Setting.findOneAndUpdate({ key: 'panel_keys' }, { data: panelKeys }, { upsert: true });
 }
 
-// 🟢 FIX: API Key is only sent in headers, URL remains static based on the panel.
+// 🟢 API Request Header Anti-Bot Config
 async function panelRequest(method, endpoint, data = null, panelName = 'stexsms') {
     const key = panelKeys[panelName];
     if (!key) throw new Error(`NO_API_KEY_${panelName}`);
@@ -125,7 +124,6 @@ async function panelRequest(method, endpoint, data = null, panelName = 'stexsms'
     const cleanKey = key.trim();
     const url = `${PANELS[panelName].baseUrl}${endpoint}`;
     
-    // Official Headers format from panel documentation
     const headers = { 
         'mauthapi': cleanKey,
         'Content-Type': 'application/json',
@@ -314,7 +312,7 @@ async function checkForceSub(chatId) {
     return true;
 }
 
-// 🟢 Fast Number Generation
+// 🟢 Fast Number Generation (Multi-Tasking Supported)
 async function generateNewNumber(chatId, plat, country, msgIdToEdit = null) {
     const ranges = await loadRanges(); 
     const rangeData = ranges[plat]?.[country];
@@ -341,18 +339,19 @@ async function generateNewNumber(chatId, plat, country, msgIdToEdit = null) {
             const fullPhone = res.data.data.full_number;
             const strippedPhone = fullPhone.replace('+', ''); 
             
-            for(let [num, data] of activeNumbers.entries()) {
-                if(data.chatId === chatId) activeNumbers.delete(num);
-            }
+            // 🟢 Multi-Tasking Fix: আগের নাম্বার ডিলিট না করে নতুনটিও লিস্টে অ্যাড হবে।
+            // User চাইলে একসাথে অনেকগুলো নাম্বার নিতে পারবে এবং সবগুলোর জন্যই পোলিং চলবে।
 
             let sentMsg;
             const boxNumber = `╔════════════════════╗\n║ 📱 \`Wait for auto OTP...\`\n╚════════════════════╝`;
             const platDisplay = `${getPlatIcon(plat)} ${plat.charAt(0).toUpperCase() + plat.slice(1)}`;
             const text = `📱 *Platform:* ${platDisplay}\n🌍 *Country:* ${country}\n🔌 *Source:* ${panelName.toUpperCase()}\n\n${boxNumber}`;
+            
+            // স্পেসিফিক নাম্বারের জন্য Change Button
             const actionMarkup = { 
                 inline_keyboard: [
                     [{ text: `📱 ${fullPhone}`, copy_text: { text: fullPhone }, style: "primary" }],
-                    [{ text: "🔁 Change Number", callback_data: "change_num", style: "danger" }]
+                    [{ text: "🔁 Change Number", callback_data: `change_${strippedPhone}`, style: "danger" }]
                 ] 
             };
 
@@ -401,10 +400,11 @@ async function generateNewNumber(chatId, plat, country, msgIdToEdit = null) {
 }
 
 // ==========================================
-// 🔄 BACKGROUND TASKS (POLLING)
+// 🔄 BACKGROUND TASKS (SUPER FAST POLLING)
 // ==========================================
 
 let isPollingOTP = false;
+// 🟢 Fast Polling: ৩ সেকেন্ড পরপর কল করবে
 setInterval(async () => {
     if (activeNumbers.size === 0 || isPollingOTP) return;
     isPollingOTP = true;
@@ -448,10 +448,16 @@ setInterval(async () => {
                         updateGlobalStats('success');
                         updateTraffic(session.plat, session.country);
                         
+                        // 🟢 FIX: আগের নাম্বার মেসেজটি ডিলিট না করে শুধু "Change Number" বাটন রিমুভ করবে
+                        const safePhoneText = `📱 +${number}`;
+                        bot.editMessageReplyMarkup({ 
+                            inline_keyboard: [[{ text: safePhoneText, copy_text: { text: `+${number}` }, style: "primary" }]] 
+                        }, { chat_id: session.chatId, message_id: session.msgId }).catch(()=>{});
+
+                        // নতুন মেসেজ আকারে OTP সেন্ড করবে
                         const formatPhone = '+' + number;
                         const platDisplay = `${getPlatIcon(session.plat)} ${session.plat.charAt(0).toUpperCase() + session.plat.slice(1)}`;
                         const boxNumber = `╔════════════════════╗\n║ 📱 \`${formatPhone}\` ║ LN- ${detectedLang}\n╚════════════════════╝`;
-                        
                         let earningText = `💰 *Earned:* \`${parseFloat(earnedAmount.toFixed(2))}\` ৳\n💳 *Total Balance:* \`${parseFloat(uDoc.balance.toFixed(2))}\` ৳`;
                         
                         const otpMarkup = { 
@@ -464,7 +470,6 @@ setInterval(async () => {
                             ] 
                         };
                         
-                        bot.deleteMessage(session.chatId, session.msgId).catch(()=>{});
                         bot.sendMessage(session.chatId, `🔔 *AUTO OTP RECEIVED!*\n\n📱 *Platform:* ${platDisplay}\n🌍 *Country:* ${session.country}\n\n${boxNumber}\n\n🎉 *Congratulations! Boss*\n${earningText}`, { parse_mode: 'Markdown', reply_markup: otpMarkup }).catch(()=>{});
                         
                         activeNumbers.delete(number);
@@ -474,7 +479,7 @@ setInterval(async () => {
         } catch(e) { }
     }
     isPollingOTP = false;
-}, 4000);
+}, 3000); // 3 Seconds Interval For Super Fast Delivery
 
 let isPollingFeed = false;
 setInterval(async () => {
@@ -1018,16 +1023,25 @@ bot.on('callback_query', async (query) => {
             await generateNewNumber(chatId, plat, country, null);
             bot.answerCallbackQuery(query.id);
         }
-        else if (data === "change_num") {
-            let plat, country;
-            for(let [num, session] of activeNumbers.entries()) {
-                if(session.chatId === chatId) { plat = session.plat; country = session.country; activeNumbers.delete(num); break; }
-            }
-            if (plat && country) {
-                await bot.editMessageText("❌ *Number Cancelled. Generating New...*", { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown' }).catch(()=>{});
+        // 🟢 FIX: Specific Cancel Button for specific active number
+        else if (data.startsWith('change_')) {
+            const num = data.split('_')[1];
+            const session = activeNumbers.get(num);
+            
+            if (session && session.chatId === chatId) {
+                const plat = session.plat;
+                const country = session.country;
+                activeNumbers.delete(num);
+                bot.editMessageText("❌ *Number Cancelled. Generating New...*", { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown' }).catch(()=>{});
                 await generateNewNumber(chatId, plat, country, msgId);
-            } else { bot.editMessageText("❌ *Session Expired. Please start again.*", { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown' }).catch(()=>{}); }
+            } else { 
+                // Either session expired, OTP already received, or it's an old button.
+                bot.editMessageText("❌ *Session Expired or Already Processed.*", { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown' }).catch(()=>{}); 
+            }
             bot.answerCallbackQuery(query.id);
+        }
+        else if (data === "change_num") {
+            bot.answerCallbackQuery(query.id, {text: "This old button is expired. Generate a new number.", show_alert: true});
         }
         else if (data === "get_new_num") {
             bot.sendMessage(chatId, "📌 *Go to GET NUMBER from menu to start again.*", { parse_mode: 'Markdown' });
@@ -1040,4 +1054,4 @@ Promise.all([loadPanelKeys()]).then(() => {
     console.log("🔑 API settings loaded from DB.");
 });
 
-console.log("🚀 V15.0 System Booted Successfully!");
+console.log("🚀 V16.0 Final System Booted Successfully!");
