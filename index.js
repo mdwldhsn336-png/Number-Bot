@@ -15,7 +15,7 @@ const PORT = process.env.PORT || 3000;
 const SERVER_URL = process.env.SERVER_URL; 
 
 app.use(express.json());
-app.get('/', (req, res) => res.send('Premium Fire OTP Bot v12.0 (Dual Panel - Stexsms & Voltxsms) is Running!'));
+app.get('/', (req, res) => res.send('Premium Fire OTP Bot v12.5 (Super Fast & Auto Debugger) is Running!'));
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 
 // --- MongoDB Setup ---
@@ -118,14 +118,14 @@ async function savePanelKey(panel, key) {
 
 async function panelRequest(method, endpoint, data = null, panelName = 'stexsms') {
     const key = panelKeys[panelName];
-    if (!key) throw new Error(`API Key not set for ${panelName}`);
+    if (!key) throw new Error(`NO_API_KEY_${panelName}`);
     
     const headers = { 'mauthapi': key };
     const url = `${PANELS[panelName].url}${endpoint}`;
     
     try {
-        if(method === 'post') return await axios.post(url, data, { headers, timeout: 15000 });
-        return await axios.get(url, { headers, timeout: 15000 });
+        if(method === 'post') return await axios.post(url, data, { headers, timeout: 10000 });
+        return await axios.get(url, { headers, timeout: 10000 });
     } catch (e) { throw e; }
 }
 
@@ -299,7 +299,7 @@ async function checkForceSub(chatId) {
     return true;
 }
 
-// 🟢 Fast Number Generation (With Dual Panel Support & Clean Errors)
+// 🟢 Fast Number Generation (With Auto Debugger for Admin)
 async function generateNewNumber(chatId, plat, country, msgIdToEdit = null) {
     const ranges = await loadRanges(); 
     const rangeData = ranges[plat]?.[country];
@@ -311,10 +311,14 @@ async function generateNewNumber(chatId, plat, country, msgIdToEdit = null) {
         return;
     }
     
-    // সাপোর্ট ওল্ড ফরম্যাট (যদি প্যানেল আগে সেভ করা না থাকে)
     const rangeVal = typeof rangeData === 'string' ? rangeData : rangeData.range;
     const panelName = typeof rangeData === 'string' ? 'stexsms' : (rangeData.panel || 'stexsms');
-    const cleanRange = rangeVal.replace(/[^0-9Xx]/g, '');
+    
+    // ফিক্স: স্পেস বা আননেসেসারি ক্যারেক্টার রিমুভ করা হয়েছে, কিন্তু XXX থাকলে ডকুমেন্টেশন অনুযায়ী সেটা রিমুভ করার চেষ্টা করবে
+    let cleanRange = rangeVal.trim();
+    if (cleanRange.toUpperCase().includes('XXX')) {
+        cleanRange = cleanRange.replace(/XXX/ig, ''); // "no XXX" রুল অ্যাপ্লাইড
+    }
 
     try {
         const res = await panelRequest('post', '/getnum', { rid: cleanRange }, panelName);
@@ -358,27 +362,42 @@ async function generateNewNumber(chatId, plat, country, msgIdToEdit = null) {
             updateGlobalStats('pending');
             
         } else {
-            // Clean Error Message for Users (No Gibberish)
-            const outTxt = "❌ *নাম্বার স্টকে নেই বা সার্ভার ব্যস্ত!*";
+            // নরমাল ইউজারদের জন্য
+            let outTxt = "❌ *নাম্বার স্টকে নেই বা রেঞ্জ ভুল দেওয়া হয়েছে!*";
+            
+            // অ্যাডমিনকে এক্সাক্ট API রেসপন্স দেখানো হবে
+            if (chatId === ADMIN_ID) {
+                outTxt = `⚠️ *Admin Debug:* Number Not Allocated.\nAPI Response: \`${JSON.stringify(res.data)}\``;
+            }
+
             if (msgIdToEdit) bot.editMessageText(outTxt, { chat_id: chatId, message_id: msgIdToEdit, parse_mode: 'Markdown' }).catch(()=>{});
             else bot.sendMessage(chatId, outTxt, { parse_mode: 'Markdown' });
         }
     } catch (error) { 
-        // Clean Error Message for Users
-        const errTxt = "⚠️ *সার্ভার সাময়িক ব্যস্ত আছে। একটু পর আবার চেষ্টা করুন।*";
+        // নরমাল ইউজারদের জন্য ক্লিন এরর মেসেজ
+        let errTxt = "⚠️ *সার্ভার সাময়িক ব্যস্ত আছে। একটু পর আবার চেষ্টা করুন।*";
+        
+        // অ্যাডমিনকে রিয়েল এরর দেখানো হবে (যাতে আপনি ফিক্স করতে পারেন)
+        if (chatId === ADMIN_ID) {
+            if (error.message.startsWith('NO_API_KEY')) {
+                errTxt = `🚫 *API Key Missing:* ${panelName.toUpperCase()} এর API Key সেট করা নেই!`;
+            } else if (error.response) {
+                errTxt = `⚠️ *Admin API Error (${error.response.status}):*\n\`${JSON.stringify(error.response.data)}\`\n\n📌 *API Key অথবা Range ID চেক করুন।*`;
+            } else {
+                errTxt = `⚠️ *Admin Network Error:* \`${error.message}\``;
+            }
+        }
+
         if (msgIdToEdit) bot.editMessageText(errTxt, { chat_id: chatId, message_id: msgIdToEdit, parse_mode: 'Markdown' }).catch(()=>{}); 
         else bot.sendMessage(chatId, errTxt, { parse_mode: 'Markdown' });
-        
-        // Log real error to console for Admin to check if needed
-        if (error.response) console.log(`[Panel Error - ${panelName}]:`, error.response.status, error.response.data);
     }
 }
 
 // ==========================================
-// 🔄 BACKGROUND TASKS (DUAL POLLING)
+// 🔄 SUPER FAST BACKGROUND TASKS (POLLING)
 // ==========================================
 
-// 1. Check for Auto OTPs from BOTH panels
+// 1. Check for Auto OTPs from BOTH panels (4s interval)
 setInterval(async () => {
     if (activeNumbers.size === 0) return;
     
@@ -446,9 +465,9 @@ setInterval(async () => {
             }
         } catch(e) { }
     }
-}, 5000);
+}, 4000);
 
-// 2. Global Live Console Feed from BOTH panels
+// 2. Global Live Console Feed from BOTH panels (5s interval)
 setInterval(async () => {
     for (const pName of ['stexsms', 'voltxsms']) {
         if (!panelKeys[pName]) continue;
@@ -487,7 +506,7 @@ setInterval(async () => {
             }
         } catch(e) {}
     }
-}, 6000);
+}, 5000);
 
 
 // --- Commands & Messages ---
@@ -507,6 +526,7 @@ bot.on('message', async (msg) => {
     const u = await ensureUser(msg.from);
     if (u && u.banned) return bot.sendMessage(chatId, "🚫 *You are banned.*", { parse_mode: 'Markdown' });
 
+    // Menu Buttons Clear Active States
     const menuButtons = ["📱 GET NUMBER", "📡 LIVE RANGE", "📊 TRAFFIC", "🔐 2FA AUTHENTICATOR", "👤 ACCOUNT", "🎧 SUPPORT", "🛠️ ADMIN PANEL"];
     if (menuButtons.some(btn => text.includes(btn))) {
         if(adminState[chatId]) delete adminState[chatId];
@@ -575,13 +595,12 @@ bot.on('message', async (msg) => {
         }
         else if (state.action === 'wait_country_name') {
             state.country = text;
-            // Ask for Panel selection
             bot.sendMessage(chatId, `✅ Country: ${text}\n\n📌 এবার কোন প্যানেল থেকে রেঞ্জ অ্যাড করবেন তা সিলেক্ট করুন:`, {
                 reply_markup: { inline_keyboard: [
                     [{ text: "⚙️ Stexsms", callback_data: "setpan_stexsms" }, { text: "⚙️ Voltxsms", callback_data: "setpan_voltxsms" }]
                 ]}
             });
-            return; // state action remains wait_country_name until button clicked
+            return; // Buttons will trigger the next step
         }
         else if (state.action === 'wait_range_val') {
             const ranges = await loadRanges();
@@ -605,7 +624,6 @@ bot.on('message', async (msg) => {
                 bot.sendMessage(chatId, `✅ *${state.panel.toUpperCase()} API Key saved successfully!*`, { parse_mode: 'Markdown' });
             } catch (e) {} delete adminState[chatId]; return;
         }
-        // ... (Other standard admin handlers skipped for brevity, they are all intact)
         else if (state.action === 'wait_broadcast_notice') {
             bot.sendMessage(chatId, "✅ *Broadcasting...*", { parse_mode: 'Markdown' });
             try {
@@ -627,6 +645,26 @@ bot.on('message', async (msg) => {
                 const config = await getAppConfig(); config.min_withdraw = val; await saveAppConfig(config);
                 bot.sendMessage(chatId, `✅ *Min Withdraw updated to ${val} ৳*`, { parse_mode: 'Markdown' });
             } else bot.sendMessage(chatId, "❌ Invalid amount");
+            delete adminState[chatId]; return;
+        }
+        else if (state.action === 'wait_pay_method_add') {
+            const m = text.trim();
+            if(m) {
+                const config = await getAppConfig(); 
+                if(!config.pay_methods.includes(m)) { config.pay_methods.push(m); await saveAppConfig(config); }
+                bot.sendMessage(chatId, `✅ *Payment Method '${m}' added!*`, { parse_mode: 'Markdown' });
+            }
+            delete adminState[chatId]; return;
+        }
+        else if (state.action === 'wait_manage_userid') {
+            const uid = text.trim();
+            const targetUser = await User.findOne({ id: String(uid) });
+            if (!targetUser) { bot.sendMessage(chatId, "❌ *User not found!*", { parse_mode: 'Markdown' }); } 
+            else {
+                const msgText = `👤 *USER DETAILS*\n\nID: \`${targetUser.id}\`\nName: ${targetUser.first_name}\nUsername: ${targetUser.username}\n\n💰 *Total Bal:* \`${parseFloat(targetUser.balance.toFixed(2))}\` ৳\n\n📊 *Total OTPs:* \`${targetUser.total_otps}\`\n🚫 *Status:* ${targetUser.banned ? 'BANNED' : 'ACTIVE'}`;
+                const markup = { inline_keyboard: [[{ text: targetUser.banned ? "✅ Unban User" : "🚫 Ban User", callback_data: `adm_togban_${targetUser.id}`, style: targetUser.banned ? "success" : "danger" }]]};
+                bot.sendMessage(chatId, msgText, { parse_mode: 'Markdown', reply_markup: markup });
+            }
             delete adminState[chatId]; return;
         }
     }
@@ -744,7 +782,7 @@ bot.on('callback_query', async (query) => {
             bot.answerCallbackQuery(query.id);
         }
 
-        // --- Other Admin Controls ---
+        // --- Dashboard & Admin Submenus ---
         else if (data === "adm_dash" && chatId === ADMIN_ID) {
             const totalUsers = await User.countDocuments();
             const statDoc = await Setting.findOne({ key: 'global_stats' });
@@ -752,7 +790,67 @@ bot.on('callback_query', async (query) => {
             const dashText = `📊 *BOT DASHBOARD*\n\n👥 *Total Users:* \`${totalUsers}\`\n\n📈 *Order Stats:*\n✅ Success: \`${gStats.success || 0}\`\n⏳ Pending: \`${gStats.pending || 0}\`\n❌ Failed: \`${gStats.failed || 0}\``;
             bot.editMessageText(dashText, { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: "🔙 Back", callback_data: "admin_main", style: "danger" }]] }});
         }
-        // ... (Skipped displaying broadcast/userlist callbacks visually to save reading time, but they remain 100% active and untouched from your previous code) ...
+        else if (data === "adm_broadcast" && chatId === ADMIN_ID) {
+            adminState[chatId] = { action: 'wait_broadcast_notice' };
+            bot.sendMessage(chatId, "✏️ *সব ইউজারদের পাঠানোর জন্য মেসেজটি লিখুন:*", { parse_mode: 'Markdown' });
+            bot.answerCallbackQuery(query.id);
+        }
+        else if (data === "adm_users" && chatId === ADMIN_ID) {
+            adminState[chatId] = { action: 'wait_manage_userid' };
+            bot.sendMessage(chatId, "✏️ *Enter User ID to manage:*", { parse_mode: 'Markdown' });
+            bot.answerCallbackQuery(query.id);
+        }
+        else if (data.startsWith('adm_togban_') && chatId === ADMIN_ID) {
+            const targetId = data.split('_')[2];
+            const targetUser = await User.findOne({ id: String(targetId) });
+            if (targetUser) {
+                targetUser.banned = !targetUser.banned;
+                await targetUser.save();
+                bot.editMessageText(`✅ *User ${targetUser.banned ? 'BANNED' : 'UNBANNED'} successfully!*`, { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown' });
+            }
+            bot.answerCallbackQuery(query.id);
+        }
+        else if (data === "adm_userlist" && chatId === ADMIN_ID) {
+            bot.answerCallbackQuery(query.id, { text: "⏳ Preparing user list..." });
+            const users = await User.find({});
+            let userList = "👥 *USER LIST*\n\nID | Name | Bal\n-----------------------\n";
+            users.forEach(u => { userList += `${u.id} | ${u.first_name || 'N/A'} | ${u.balance || 0}\n`; });
+            const buffer = Buffer.from(userList, 'utf-8');
+            bot.sendDocument(chatId, buffer, {}, { filename: 'users.txt', contentType: 'text/plain' }).catch(()=>{});
+        }
+        else if (data === "adm_paycfg" && chatId === ADMIN_ID) {
+            const config = await getAppConfig();
+            let msg = `💳 *Payment Settings*\n\n💰 *Per OTP Earning:* \`${config.per_otp_rate}\` ৳\n📉 *Min Withdraw:* \`${config.min_withdraw}\` ৳\n\n💳 *Methods:* ${config.pay_methods.join(', ') || 'None'}`;
+            let kb = [
+                [{ text: "✏️ Edit Earning/OTP", callback_data: "adm_edit_otprate", style: "primary" }, { text: "✏️ Edit Min Withdraw", callback_data: "adm_edit_minwd", style: "primary" }],
+                [{ text: "➕ Add Method", callback_data: "adm_add_paym", style: "success" }, { text: "🗑️ Delete Method", callback_data: "adm_del_paym", style: "danger" }],
+                [{ text: "🔙 Back", callback_data: "admin_main", style: "danger" }]
+            ];
+            bot.editMessageText(msg, { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown', reply_markup: { inline_keyboard: kb } });
+        }
+        else if (data === "adm_edit_otprate" && chatId === ADMIN_ID) {
+            adminState[chatId] = { action: 'wait_otp_rate' }; bot.sendMessage(chatId, "✏️ *Enter new earning per OTP (৳):*", { parse_mode: 'Markdown' }); bot.answerCallbackQuery(query.id);
+        }
+        else if (data === "adm_edit_minwd" && chatId === ADMIN_ID) {
+            adminState[chatId] = { action: 'wait_min_wd' }; bot.sendMessage(chatId, "✏️ *Enter new minimum withdraw limit (৳):*", { parse_mode: 'Markdown' }); bot.answerCallbackQuery(query.id);
+        }
+        else if (data === "adm_add_paym" && chatId === ADMIN_ID) {
+            adminState[chatId] = { action: 'wait_pay_method_add' }; bot.sendMessage(chatId, "✏️ *Enter new payment method name:*", { parse_mode: 'Markdown' }); bot.answerCallbackQuery(query.id);
+        }
+        else if (data === "adm_del_paym" && chatId === ADMIN_ID) {
+            const config = await getAppConfig();
+            let kb = [];
+            config.pay_methods.forEach(m => { kb.push([{ text: `🗑️ ${m}`, callback_data: `admdel_m_${m}`, style: "danger" }]); });
+            kb.push([{ text: "🔙 Back", callback_data: "adm_paycfg", style: "primary" }]);
+            bot.editMessageText("📌 *Select method to delete:*", { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown', reply_markup: { inline_keyboard: kb } });
+        }
+        else if (data.startsWith('admdel_m_') && chatId === ADMIN_ID) {
+            const m = data.split('admdel_m_')[1];
+            const config = await getAppConfig();
+            config.pay_methods = config.pay_methods.filter(x => x !== m);
+            await saveAppConfig(config);
+            bot.editMessageText(`✅ Deleted '${m}'`, { chat_id: chatId, message_id: msgId, reply_markup: { inline_keyboard: [[{ text: "🔙 Back", callback_data: "adm_paycfg", style: "danger" }]] } });
+        }
         
         // --- Sites & Ranges ---
         else if (data === "adm_sites" && chatId === ADMIN_ID) {
@@ -846,6 +944,26 @@ bot.on('callback_query', async (query) => {
             bot.sendMessage(chatId, `✏️ *আপনার ${method} Account ID / Number দিন:*`, { parse_mode: 'Markdown' });
             bot.answerCallbackQuery(query.id);
         }
+        else if (data.startsWith('wd_appr_') || data.startsWith('wd_canc_')) {
+            if (query.from.id !== ADMIN_ID) return bot.answerCallbackQuery(query.id, { text: "❌ Only Admin can do this!", show_alert: true });
+            const isApprove = data.startsWith('wd_appr_');
+            const wd_id = data.split('_')[2];
+            try {
+                const reqDoc = await Withdraw.findOne({ wd_id: wd_id });
+                if (!reqDoc || reqDoc.status !== 'pending') return bot.answerCallbackQuery(query.id, { text: "⚠️ Already processed.", show_alert: true });
+                if (isApprove) {
+                    reqDoc.status = 'approved'; await reqDoc.save();
+                    bot.editMessageText(query.message.text + "\n\n✅ *STATUS: APPROVED*", { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown' });
+                    bot.sendMessage(reqDoc.user_id, `🎉 *Withdrawal Approved!*\n\n💰 Amount: \`${reqDoc.amount}\` ৳\n💳 Method: ${reqDoc.method}`, { parse_mode: 'Markdown' }).catch(()=>{});
+                } else {
+                    reqDoc.status = 'rejected'; await reqDoc.save();
+                    const uDoc = await User.findOne({ id: reqDoc.user_id });
+                    if (uDoc) { uDoc.balance = parseFloat((uDoc.balance + reqDoc.amount).toFixed(2)); await uDoc.save(); }
+                    bot.editMessageText(query.message.text + "\n\n❌ *STATUS: REJECTED*", { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown' });
+                    bot.sendMessage(reqDoc.user_id, `❌ *Withdrawal Rejected!* Amount refunded.`, { parse_mode: 'Markdown' }).catch(()=>{});
+                }
+            } catch (e) {} bot.answerCallbackQuery(query.id);
+        }
 
         // --- User 2FA Controls ---
         else if (data === "add_2fa") {
@@ -860,6 +978,15 @@ bot.on('callback_query', async (query) => {
                 const token = authenticator.generate(saved2fa[index].secret);
                 const markup = { inline_keyboard: [[{ text: `  ${token}`, copy_text: { text: token }, style: "success" }]] };
                 bot.sendMessage(chatId, `🔐 *Live 2FA OTP Code:*\n\n\`${token}\``, { parse_mode: 'Markdown', reply_markup: markup });
+            }
+            bot.answerCallbackQuery(query.id);
+        }
+        else if (data.startsWith('del_2fa_')) {
+            const index = parseInt(data.split('_')[2]);
+            const saved2fa = await get2FA(chatId);
+            if (saved2fa[index]) {
+                saved2fa.splice(index, 1); await save2FA(chatId, saved2fa);
+                bot.editMessageText("✅ *2FA Secret ডিলিট করা হয়েছে!*", { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown' });
             }
             bot.answerCallbackQuery(query.id);
         }
@@ -904,4 +1031,4 @@ Promise.all([loadPanelKeys()]).then(() => {
     console.log("🔑 API settings loaded from DB.");
 });
 
-console.log("🚀 V12.0 Dual Panel System Booted Successfully!");
+console.log("🚀 V12.5 System Booted Successfully!");
