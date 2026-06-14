@@ -15,7 +15,7 @@ const PORT = process.env.PORT || 3000;
 const SERVER_URL = process.env.SERVER_URL; 
 
 app.use(express.json());
-app.get('/', (req, res) => res.send('Premium Fire OTP Bot v22.0 (Voltxsms Route Fixed) is Running!'));
+app.get('/', (req, res) => res.send('Premium Fire OTP Bot v23.0 (1s Polling & Join Fix) is Running!'));
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 
 // --- MongoDB Setup ---
@@ -99,7 +99,6 @@ let userState = {};
 // ==========================================
 const PANELS = {
     stexsms: { baseUrl: 'https://api.2oo9.cloud/MXS47FLFX0U/tness/@public/api' },
-    // 🟢 SUPER FIX: Changed Voltxsms route from 'MXS47FLFXBU' to 'MXS47FLFX0U'
     voltxsms: { baseUrl: 'https://api.2oo9.cloud/MXS47FLFX0U/tnevs/@public/api' }
 };
 
@@ -308,6 +307,19 @@ function detectLang(text) {
     return 'English';
 }
 
+// 🟢 NEW: Silent check function for the "Joined" callback
+async function isUserSubscribed(chatId) {
+    if (chatId === ADMIN_ID) return true;
+    const channels = ['@developer_walid', '@fireotp_method', OTP_GROUP_ID];
+    for (let ch of channels) {
+        try {
+            const member = await bot.getChatMember(ch, chatId);
+            if (member.status === 'left' || member.status === 'kicked') return false;
+        } catch (e) { return false; }
+    }
+    return true;
+}
+
 async function checkForceSub(chatId) {
     if (chatId === ADMIN_ID) return true;
     const channels = ['@developer_walid', '@fireotp_method', OTP_GROUP_ID];
@@ -422,7 +434,7 @@ async function generateNewNumber(chatId, plat, country, panelNameInput = null, r
         let errTxt = "⚠️ *সার্ভার সাময়িক ব্যস্ত আছে। একটু পর আবার চেষ্টা করুন।*";
         
         if (chatId === ADMIN_ID) {
-            if (error.message && error.message.startsWith('NO_API_KEY')) {
+            if (error.message.startsWith('NO_API_KEY')) {
                 errTxt = `🚫 *API Key Missing:* ${panelName.toUpperCase()} এর API Key সেট করা নেই!`;
             } else if (error.response) {
                 errTxt = `⚠️ *Admin API Error (${error.response.status}):*\n\`${JSON.stringify(error.response.data)}\`\n\n📌 *API Key অথবা Range ID চেক করুন।*`;
@@ -437,10 +449,11 @@ async function generateNewNumber(chatId, plat, country, panelNameInput = null, r
 }
 
 // ==========================================
-// 🔄 BACKGROUND TASKS (SUPER FAST POLLING)
+// 🔄 BACKGROUND TASKS (1 SECOND POLLING)
 // ==========================================
 
 let isPollingOTP = false;
+// 🟢 FIX: Set OTP Polling to 1000ms (1 Second)
 setInterval(async () => {
     if (activeNumbers.size === 0 || isPollingOTP) return;
     isPollingOTP = true;
@@ -540,7 +553,7 @@ setInterval(async () => {
         } catch(e) { }
     }
     isPollingOTP = false;
-}, 3000); 
+}, 1000); // 🟢 1 SECOND POLLING
 
 let isPollingFeed = false;
 setInterval(async () => {
@@ -753,6 +766,15 @@ bot.on('message', async (msg) => {
             ranges[state.platform][state.country] = { range: text, panel: state.panel };
             await saveRanges(ranges);
             bot.sendMessage(chatId, `✅ *${state.platform}* এর জন্য রেঞ্জ সেভ হয়েছে! (Panel: ${state.panel})`, { parse_mode: 'Markdown' });
+            
+            // 🟢 NEW: Range Add Auto Broadcast
+            const platDisplay = `${getPlatIcon(state.platform)} ${state.platform.charAt(0).toUpperCase() + state.platform.slice(1)}`;
+            const broadcastMsg = `📢 *NEW NUMBER ADDED!* 🔥\n\n📱 *Platform:* ${platDisplay}\n🌍 *Country:* ${state.country}\n🎯 *Range:* \`${text}\`\n\n🚀 _এখনই /start দিয়ে Number নিয়ে কাজ শুরু করুন!_`;
+            try {
+                const users = await User.find({});
+                users.forEach(usr => bot.sendMessage(u.id, broadcastMsg, { parse_mode: 'Markdown' }).catch(()=>{}));
+            } catch (e) {}
+
             delete adminState[chatId]; return;
         }
         else if (state.action === 'wait_range_edit') {
@@ -760,6 +782,15 @@ bot.on('message', async (msg) => {
             ranges[state.platform][state.country] = { range: text, panel: state.panel };
             await saveRanges(ranges);
             bot.sendMessage(chatId, `✅ Range updated successfully! (Panel: ${state.panel})`);
+            
+            // 🟢 NEW: Range Edit Auto Broadcast
+            const platDisplay = `${getPlatIcon(state.platform)} ${state.platform.charAt(0).toUpperCase() + state.platform.slice(1)}`;
+            const broadcastMsg = `📢 *NEW NUMBER UPDATED!* 🔥\n\n📱 *Platform:* ${platDisplay}\n🌍 *Country:* ${state.country}\n🎯 *Range:* \`${text}\`\n\n🚀 _এখনই /start দিয়ে Number নিয়ে কাজ শুরু করুন!_`;
+            try {
+                const users = await User.find({});
+                users.forEach(usr => bot.sendMessage(u.id, broadcastMsg, { parse_mode: 'Markdown' }).catch(()=>{}));
+            } catch (e) {}
+
             delete adminState[chatId]; return;
         }
         else if (state.action === 'wait_apikey_add') {
@@ -773,7 +804,7 @@ bot.on('message', async (msg) => {
             bot.sendMessage(chatId, "✅ *Broadcasting...*", { parse_mode: 'Markdown' });
             try {
                 const users = await User.find({});
-                users.forEach(u => bot.sendMessage(u.id, `📢 *Notice from Admin:*\n\n${text}`, { parse_mode: 'Markdown' }).catch(()=>{}));
+                users.forEach(usr => bot.sendMessage(u.id, `📢 *Notice from Admin:*\n\n${text}`, { parse_mode: 'Markdown' }).catch(()=>{}));
             } catch (e) {} delete adminState[chatId]; return;
         }
         else if (state.action === 'wait_otp_rate') {
@@ -891,6 +922,21 @@ bot.on('callback_query', async (query) => {
     const data = query.data;
     const msgId = query.message.message_id;
 
+    // 🟢 NEW: Handle Joined Button Click Properly
+    if (data === "check_joined") {
+        const subbed = await isUserSubscribed(chatId);
+        if (subbed) {
+            bot.deleteMessage(chatId, msgId).catch(()=>{});
+            const u = await ensureUser(query.from);
+            const welcomeMsg = ` 💐*WELCOME TO FIRE OTP BOT*\n\n👋 Hello, *${u.first_name}*!\n\n🚀 _Get unlimited virtual numbers and instant OTPs for any platform in seconds._\n\n👇 Please choose an option from the menu below:`;
+            bot.sendMessage(chatId, welcomeMsg, { parse_mode: 'Markdown', ...getMainMenu(chatId) });
+        } else {
+            bot.sendMessage(chatId, "⚠️ *আপনি এখনও সবগুলো চ্যানেলে জয়েন করেননি!*", { parse_mode: 'Markdown' });
+        }
+        bot.answerCallbackQuery(query.id).catch(()=>{});
+        return;
+    }
+
     bot.answerCallbackQuery(query.id).catch(()=>{});
 
     try {
@@ -928,7 +974,6 @@ bot.on('callback_query', async (query) => {
             bot.editMessageText("⚙️ *Bot Settings*\n\nপ্যানেল এবং অন্যান্য সেটিংস অন/অফ করুন:", { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown', reply_markup: { inline_keyboard: kb } }).catch(()=>{});
         }
 
-        // --- Dual Panel API Keys ---
         else if (data === "adm_apikey" && chatId === ADMIN_ID) {
             let msgText = `🔑 *Panel API Keys:*\n\n`;
             msgText += `*Stexsms:* \`${panelKeys.stexsms ? panelKeys.stexsms.substring(0, 8) + '...' : 'Not Set'}\`\n`;
@@ -946,7 +991,6 @@ bot.on('callback_query', async (query) => {
             bot.sendMessage(chatId, `✏️ *${panelName.toUpperCase()} Panel* এর API Key টি পেস্ট করুন:`, { parse_mode: 'Markdown' });
         }
 
-        // --- Panel Selection during Range Add/Edit ---
         else if (data.startsWith('setpan_') && chatId === ADMIN_ID) {
             const panel = data.split('_')[1];
             if (adminState[chatId] && adminState[chatId].country) {
@@ -964,7 +1008,6 @@ bot.on('callback_query', async (query) => {
             }
         }
 
-        // --- Dashboard & Admin Submenus ---
         else if (data === "adm_dash" && chatId === ADMIN_ID) {
             const totalUsers = await User.countDocuments();
             const statDoc = await Setting.findOne({ key: 'global_stats' });
@@ -1045,7 +1088,6 @@ bot.on('callback_query', async (query) => {
             bot.editMessageText(`✅ Deleted '${m}'`, { chat_id: chatId, message_id: msgId, reply_markup: { inline_keyboard: [[{ text: "🔙 Back", callback_data: "adm_paycfg", style: "danger" }]] } }).catch(()=>{});
         }
         
-        // --- Sites & Ranges (Callback properly answers now) ---
         else if (data === "adm_sites" && chatId === ADMIN_ID) {
             const ranges = await loadRanges() || {};
             let inlineKeyboard = [];
@@ -1127,7 +1169,6 @@ bot.on('callback_query', async (query) => {
                 bot.sendMessage(chatId, "⚠️ Reward system is currently disabled.");
                 return;
             }
-            
             let methods = config.pay_methods || [];
             if(methods.length === 0) {
                 bot.sendMessage(chatId, "⚠️ No payment methods available.");
@@ -1141,26 +1182,6 @@ bot.on('callback_query', async (query) => {
             const method = data.split('wd_m_')[1];
             userState[chatId] = { action: 'wait_wd_id', method: method };
             bot.sendMessage(chatId, `✏️ *আপনার ${method} Account ID / Number দিন:*`, { parse_mode: 'Markdown' });
-        }
-        else if (data.startsWith('wd_appr_') || data.startsWith('wd_canc_')) {
-            if (query.from.id !== ADMIN_ID) return;
-            const isApprove = data.startsWith('wd_appr_');
-            const wd_id = data.split('_')[2];
-            try {
-                const reqDoc = await Withdraw.findOne({ wd_id: wd_id });
-                if (!reqDoc || reqDoc.status !== 'pending') return;
-                if (isApprove) {
-                    reqDoc.status = 'approved'; await reqDoc.save();
-                    bot.editMessageText(query.message.text + "\n\n✅ *STATUS: APPROVED*", { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown' }).catch(()=>{});
-                    bot.sendMessage(reqDoc.user_id, `🎉 *Withdrawal Approved!*\n\n💰 Amount: \`${reqDoc.amount}\` ৳\n💳 Method: ${reqDoc.method}`, { parse_mode: 'Markdown' }).catch(()=>{});
-                } else {
-                    reqDoc.status = 'rejected'; await reqDoc.save();
-                    const uDoc = await User.findOne({ id: reqDoc.user_id });
-                    if (uDoc) { uDoc.balance = parseFloat((uDoc.balance + reqDoc.amount).toFixed(2)); await uDoc.save(); }
-                    bot.editMessageText(query.message.text + "\n\n❌ *STATUS: REJECTED*", { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown' }).catch(()=>{});
-                    bot.sendMessage(reqDoc.user_id, `❌ *Withdrawal Rejected!* Amount refunded.`, { parse_mode: 'Markdown' }).catch(()=>{});
-                }
-            } catch (e) {}
         }
 
         // --- User 2FA Controls ---
@@ -1230,7 +1251,7 @@ bot.on('callback_query', async (query) => {
 });
 
 Promise.all([loadPanelKeys()]).then(() => {
-    console.log("🔑 DB Settings Loaded.");
+    console.log("🔑 DB Settings Loaded. Default APIs injected.");
 });
 
-console.log("🚀 V22.0 Voltxsms Fixed Booted Successfully!");
+console.log("🚀 V23.0 Fully Fixed Booted Successfully!");
