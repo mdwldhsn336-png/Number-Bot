@@ -15,7 +15,7 @@ const PORT = process.env.PORT || 3000;
 const SERVER_URL = process.env.SERVER_URL; 
 
 app.use(express.json());
-app.get('/', (req, res) => res.send('Premium Fire OTP Bot v23.0 (1s Polling & Join Fix) is Running!'));
+app.get('/', (req, res) => res.send('Premium Fire OTP Bot v24.0 (Broadcast Fix & Change Number) is Running!'));
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 
 // --- MongoDB Setup ---
@@ -307,7 +307,6 @@ function detectLang(text) {
     return 'English';
 }
 
-// 🟢 NEW: Silent check function for the "Joined" callback
 async function isUserSubscribed(chatId) {
     if (chatId === ADMIN_ID) return true;
     const channels = ['@developer_walid', '@fireotp_method', OTP_GROUP_ID];
@@ -367,13 +366,13 @@ async function generateNewNumber(chatId, plat, country, panelNameInput = null, r
     }
 
     if (panelName === 'stexsms' && !config.stexsms_on) {
-        const errTxt = "❌ *Stexsms প্যানেলটি অ্যাডমিন অফ করে রেখেছেন।*";
+        const errTxt = "❌ *সার্ভার আপডেট চলছে।*"; // User clean msg
         if (msgIdToEdit) bot.editMessageText(errTxt, {chat_id: chatId, message_id: msgIdToEdit, parse_mode: 'Markdown'}).catch(()=>{});
         else bot.sendMessage(chatId, errTxt, {parse_mode: 'Markdown'});
         return;
     }
     if (panelName === 'voltxsms' && !config.voltxsms_on) {
-        const errTxt = "❌ *Voltxsms প্যানেলটি অ্যাডমিন অফ করে রেখেছেন।*";
+        const errTxt = "❌ *সার্ভার আপডেট চলছে।*"; // User clean msg
         if (msgIdToEdit) bot.editMessageText(errTxt, {chat_id: chatId, message_id: msgIdToEdit, parse_mode: 'Markdown'}).catch(()=>{});
         else bot.sendMessage(chatId, errTxt, {parse_mode: 'Markdown'});
         return;
@@ -395,12 +394,13 @@ async function generateNewNumber(chatId, plat, country, panelNameInput = null, r
             const boxNumber = `╔════════════════════╗\n║ 📱 \`Wait for auto OTP...\`\n╚════════════════════╝`;
             const platDisplay = `${getPlatIcon(plat)} ${plat.charAt(0).toUpperCase() + plat.slice(1)}`;
             
+            // 🟢 UI Clean: No Panel Source for users
             const text = `📱 *Platform:* ${platDisplay}\n🌍 *Country:* ${country}\n\n${boxNumber}`;
             
             const actionMarkup = { 
                 inline_keyboard: [
                     [{ text: `📱 ${fullPhone}`, copy_text: { text: fullPhone }, style: "primary" }],
-                    [{ text: "❌ Cancel Number", callback_data: `cancel_${strippedPhone}`, style: "danger" }]
+                    [{ text: "🔁 Change Number", callback_data: `change_${strippedPhone}`, style: "danger" }]
                 ] 
             };
 
@@ -434,7 +434,7 @@ async function generateNewNumber(chatId, plat, country, panelNameInput = null, r
         let errTxt = "⚠️ *সার্ভার সাময়িক ব্যস্ত আছে। একটু পর আবার চেষ্টা করুন।*";
         
         if (chatId === ADMIN_ID) {
-            if (error.message.startsWith('NO_API_KEY')) {
+            if (error.message && error.message.startsWith('NO_API_KEY')) {
                 errTxt = `🚫 *API Key Missing:* ${panelName.toUpperCase()} এর API Key সেট করা নেই!`;
             } else if (error.response) {
                 errTxt = `⚠️ *Admin API Error (${error.response.status}):*\n\`${JSON.stringify(error.response.data)}\`\n\n📌 *API Key অথবা Range ID চেক করুন।*`;
@@ -449,11 +449,10 @@ async function generateNewNumber(chatId, plat, country, panelNameInput = null, r
 }
 
 // ==========================================
-// 🔄 BACKGROUND TASKS (1 SECOND POLLING)
+// 🔄 BACKGROUND TASKS (SUPER FAST POLLING)
 // ==========================================
 
 let isPollingOTP = false;
-// 🟢 FIX: Set OTP Polling to 1000ms (1 Second)
 setInterval(async () => {
     if (activeNumbers.size === 0 || isPollingOTP) return;
     isPollingOTP = true;
@@ -553,7 +552,7 @@ setInterval(async () => {
         } catch(e) { }
     }
     isPollingOTP = false;
-}, 1000); // 🟢 1 SECOND POLLING
+}, 1000); 
 
 let isPollingFeed = false;
 setInterval(async () => {
@@ -767,12 +766,12 @@ bot.on('message', async (msg) => {
             await saveRanges(ranges);
             bot.sendMessage(chatId, `✅ *${state.platform}* এর জন্য রেঞ্জ সেভ হয়েছে! (Panel: ${state.panel})`, { parse_mode: 'Markdown' });
             
-            // 🟢 NEW: Range Add Auto Broadcast
+            // 🟢 FIX: Broadcast to Users (Range hidden, only platform/country shown)
             const platDisplay = `${getPlatIcon(state.platform)} ${state.platform.charAt(0).toUpperCase() + state.platform.slice(1)}`;
-            const broadcastMsg = `📢 *NEW NUMBER ADDED!* 🔥\n\n📱 *Platform:* ${platDisplay}\n🌍 *Country:* ${state.country}\n🎯 *Range:* \`${text}\`\n\n🚀 _এখনই /start দিয়ে Number নিয়ে কাজ শুরু করুন!_`;
+            const broadcastMsg = `📢 *NEW NUMBER ADDED!* 🔥\n\n📱 *Platform:* ${platDisplay}\n🌍 *Country:* ${state.country}\n\n🚀 _এখনই /start দিয়ে Number নিয়ে কাজ শুরু করুন!_`;
             try {
                 const users = await User.find({});
-                users.forEach(usr => bot.sendMessage(u.id, broadcastMsg, { parse_mode: 'Markdown' }).catch(()=>{}));
+                users.forEach(usr => bot.sendMessage(usr.id, broadcastMsg, { parse_mode: 'Markdown' }).catch(()=>{}));
             } catch (e) {}
 
             delete adminState[chatId]; return;
@@ -783,12 +782,12 @@ bot.on('message', async (msg) => {
             await saveRanges(ranges);
             bot.sendMessage(chatId, `✅ Range updated successfully! (Panel: ${state.panel})`);
             
-            // 🟢 NEW: Range Edit Auto Broadcast
+            // 🟢 FIX: Broadcast to Users
             const platDisplay = `${getPlatIcon(state.platform)} ${state.platform.charAt(0).toUpperCase() + state.platform.slice(1)}`;
-            const broadcastMsg = `📢 *NEW NUMBER UPDATED!* 🔥\n\n📱 *Platform:* ${platDisplay}\n🌍 *Country:* ${state.country}\n🎯 *Range:* \`${text}\`\n\n🚀 _এখনই /start দিয়ে Number নিয়ে কাজ শুরু করুন!_`;
+            const broadcastMsg = `📢 *NEW NUMBER UPDATED!* 🔥\n\n📱 *Platform:* ${platDisplay}\n🌍 *Country:* ${state.country}\n\n🚀 _এখনই /start দিয়ে Number নিয়ে কাজ শুরু করুন!_`;
             try {
                 const users = await User.find({});
-                users.forEach(usr => bot.sendMessage(u.id, broadcastMsg, { parse_mode: 'Markdown' }).catch(()=>{}));
+                users.forEach(usr => bot.sendMessage(usr.id, broadcastMsg, { parse_mode: 'Markdown' }).catch(()=>{}));
             } catch (e) {}
 
             delete adminState[chatId]; return;
@@ -804,7 +803,7 @@ bot.on('message', async (msg) => {
             bot.sendMessage(chatId, "✅ *Broadcasting...*", { parse_mode: 'Markdown' });
             try {
                 const users = await User.find({});
-                users.forEach(usr => bot.sendMessage(u.id, `📢 *Notice from Admin:*\n\n${text}`, { parse_mode: 'Markdown' }).catch(()=>{}));
+                users.forEach(usr => bot.sendMessage(usr.id, `📢 *Notice from Admin:*\n\n${text}`, { parse_mode: 'Markdown' }).catch(()=>{}));
             } catch (e) {} delete adminState[chatId]; return;
         }
         else if (state.action === 'wait_otp_rate') {
@@ -922,7 +921,6 @@ bot.on('callback_query', async (query) => {
     const data = query.data;
     const msgId = query.message.message_id;
 
-    // 🟢 NEW: Handle Joined Button Click Properly
     if (data === "check_joined") {
         const subbed = await isUserSubscribed(chatId);
         if (subbed) {
@@ -1224,13 +1222,21 @@ bot.on('callback_query', async (query) => {
             bot.deleteMessage(chatId, msgId).catch(()=>{});
             await generateNewNumber(chatId, plat, country, null, null, null);
         }
-        else if (data.startsWith('cancel_')) {
+        
+        // 🟢 NEW: Change Number directly fetches a new one from the same range
+        else if (data.startsWith('change_')) {
             const num = data.split('_')[1];
             const session = activeNumbers.get(num);
             
             if (session && session.chatId === chatId) {
+                const plat = session.plat;
+                const country = session.country;
+                const panel = session.panel;
+                
                 activeNumbers.delete(num);
-                bot.editMessageText("❌ *Number Cancelled.*", { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown' }).catch(()=>{});
+                bot.editMessageText("❌ *Number Cancelled. Generating New...*", { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown' }).catch(()=>{});
+                
+                await generateNewNumber(chatId, plat, country, panel, null, msgId);
             } else { 
                 bot.editMessageText("❌ *Session Expired or Already Processed.*", { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown' }).catch(()=>{}); 
             }
@@ -1254,4 +1260,4 @@ Promise.all([loadPanelKeys()]).then(() => {
     console.log("🔑 DB Settings Loaded. Default APIs injected.");
 });
 
-console.log("🚀 V23.0 Fully Fixed Booted Successfully!");
+console.log("🚀 V24.0 Broadcast & Change Num Fixed Successfully!");
