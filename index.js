@@ -9,13 +9,13 @@ const { authenticator } = require('otplib');
 process.on('unhandledRejection', (reason) => { console.error('Unhandled Rejection:', reason); });
 process.on('uncaughtException', (err) => { console.error('Uncaught Exception:', err.message); });
 
-// --- Express Server (For Webhook & Keep-Alive) ---
+// --- Express Server ---
 const app = express();
 const PORT = process.env.PORT || 3000;
 const SERVER_URL = process.env.SERVER_URL; 
 
 app.use(express.json());
-app.get('/', (req, res) => res.send('Premium Fire OTP Bot v11.7 (Advanced Cookie & Debugging) is Running!'));
+app.get('/', (req, res) => res.send('Premium Fire OTP Bot v11.8 (Cookie Login Flow Fixed) is Running!'));
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 
 // --- MongoDB Setup ---
@@ -27,42 +27,23 @@ mongoose.connect(MONGO_URI)
 
 // --- Mongoose Schemas ---
 const UserSchema = new mongoose.Schema({
-    id: String,
-    first_name: String,
-    username: String,
-    total_numbers: { type: Number, default: 0 },
-    total_otps: { type: Number, default: 0 },
-    today_otps: { type: Number, default: 0 },
-    balance: { type: Number, default: 0 },
-    today_balance: { type: Number, default: 0 },
-    last_active_date: String,
-    banned: { type: Boolean, default: false },
-    joined: String,
-    two_fa: { type: Array, default: [] }
+    id: String, first_name: String, username: String,
+    total_numbers: { type: Number, default: 0 }, total_otps: { type: Number, default: 0 },
+    today_otps: { type: Number, default: 0 }, balance: { type: Number, default: 0 },
+    today_balance: { type: Number, default: 0 }, last_active_date: String,
+    banned: { type: Boolean, default: false }, joined: String, two_fa: { type: Array, default: [] }
 });
 const User = mongoose.model('User', UserSchema);
 
-const SettingSchema = new mongoose.Schema({
-    key: { type: String, unique: true },
-    data: mongoose.Schema.Types.Mixed
-});
+const SettingSchema = new mongoose.Schema({ key: { type: String, unique: true }, data: mongoose.Schema.Types.Mixed });
 const Setting = mongoose.model('Setting', SettingSchema);
 
-const EarningSchema = new mongoose.Schema({
-    user_id: String,
-    num_id: String,
-    date: String
-});
+const EarningSchema = new mongoose.Schema({ user_id: String, num_id: String, date: String });
 const Earning = mongoose.model('Earning', EarningSchema);
 
 const WithdrawSchema = new mongoose.Schema({
-    wd_id: String,
-    user_id: String,
-    amount: Number,
-    method: String,
-    account: String,
-    status: { type: String, default: 'pending' },
-    date: String
+    wd_id: String, user_id: String, amount: Number, method: String, account: String,
+    status: { type: String, default: 'pending' }, date: String
 });
 const Withdraw = mongoose.model('Withdraw', WithdrawSchema);
 
@@ -83,11 +64,10 @@ if (SERVER_URL) {
     bot.on('polling_error', (err) => console.log("Polling Error:", err.message));
 }
 
-let adminState = {};
-let userState = {};
+let adminState = {}; let userState = {};
 
 // ==========================================
-// 🔥 ADVANCED PANEL API SETUP
+// 🔥 TWO-STEP COOKIE AUTHENTICATION
 // ==========================================
 let defaultBaseUrl = 'https://api.2oo9.cloud/MXS47FLFXBU/tness/@public/api'; 
 let panelCookie = "";
@@ -96,7 +76,6 @@ async function loadPanelSettings() {
     try {
         const cookieDoc = await Setting.findOne({ key: 'panel_cookie' });
         if (cookieDoc && cookieDoc.data && cookieDoc.data.cookie) panelCookie = cookieDoc.data.cookie;
-        
         const urlDoc = await Setting.findOne({ key: 'panel_base_url' });
         if (urlDoc && urlDoc.data && urlDoc.data.url) defaultBaseUrl = urlDoc.data.url;
     } catch(e) {}
@@ -112,25 +91,37 @@ async function savePanelBaseUrl(url) {
     defaultBaseUrl = url;
 }
 
-async function panelRequest(method, endpoint, data = null) {
+// 🟢 STEP 1: Session Initialization (Login Check)
+async function initializeSession() {
     let extractedToken = panelCookie;
     if (panelCookie && panelCookie.includes("mauth=")) {
         const match = panelCookie.match(/mauth=([^;]+)/);
         if (match) extractedToken = match[1];
     }
 
-    // Advanced Web Browsing Headers
     const headers = { 
         'Cookie': panelCookie,
         'Authorization': `Bearer ${extractedToken}`,
         'mauthapi': extractedToken,
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'application/json, text/plain, */*',
-        'Content-Type': 'application/json',
-        'X-Requested-With': 'XMLHttpRequest', // Often required for Web Panels
-        'Origin': new URL(defaultBaseUrl).origin,
-        'Referer': new URL(defaultBaseUrl).origin + '/'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+        'Accept': 'application/json'
     };
+    
+    try {
+        // প্রোফাইল বা ড্যাশবোর্ডে ডামি হিট করে সেশন অ্যাকটিভ করা হচ্ছে
+        await axios.get(`${defaultBaseUrl}/user`, { headers, timeout: 10000 }).catch(() => {});
+        return headers;
+    } catch (e) {
+        return headers;
+    }
+}
+
+// 🟢 STEP 2: Actual API Request
+async function panelRequest(method, endpoint, data = null) {
+    const headers = await initializeSession(); // প্রথমে লগইন/সেশন ইনিশিয়ালাইজ করবে
+    
+    headers['Content-Type'] = 'application/json';
+    headers['X-Requested-With'] = 'XMLHttpRequest';
     
     const url = `${defaultBaseUrl}${endpoint}`;
     
@@ -139,10 +130,7 @@ async function panelRequest(method, endpoint, data = null) {
         return await axios.get(url, { headers, timeout: 15000 });
     } catch (e) { 
         let errorMsg = e.message;
-        if (e.response) {
-            // Server responded with an error, extract it to show the Admin/User
-            errorMsg = `Status: ${e.response.status} - Data: ${JSON.stringify(e.response.data).substring(0, 100)}`;
-        }
+        if (e.response) { errorMsg = `Status: ${e.response.status} - Data: ${JSON.stringify(e.response.data).substring(0, 100)}`; }
         console.error(`❌ API Error:`, errorMsg);
         throw new Error(errorMsg); 
     }
@@ -151,23 +139,17 @@ async function panelRequest(method, endpoint, data = null) {
 // ==========================================
 // 🚀 STATE MANAGERS FOR AUTO-OTP
 // ==========================================
-const activeNumbers = new Map(); 
-const deliveredOtps = new Set();
-const seenConsoleHits = new Set();
+const activeNumbers = new Map(); const deliveredOtps = new Set(); const seenConsoleHits = new Set();
 
 setInterval(() => {
     const now = Date.now();
     for (let [number, data] of activeNumbers.entries()) {
-        if (now - data.createdAt > NUMBER_EXPIRY_MS) {
-            activeNumbers.delete(number);
-            updateGlobalStats('failed');
-        }
+        if (now - data.createdAt > NUMBER_EXPIRY_MS) { activeNumbers.delete(number); updateGlobalStats('failed'); }
     }
 }, 60000);
 
 function getLocDate() {
-    let today = new Date();
-    let offset = today.getTimezoneOffset() * 60000;
+    let today = new Date(); let offset = today.getTimezoneOffset() * 60000;
     return (new Date(today - offset)).toISOString().split('T')[0];
 }
 
@@ -183,8 +165,7 @@ async function saveAppConfig(data) { await Setting.findOneAndUpdate({ key: 'app_
 async function ensureUser(user) {
     if (!user || !user.id) return null;
     try {
-        const today = getLocDate();
-        let u = await User.findOne({ id: String(user.id) });
+        const today = getLocDate(); let u = await User.findOne({ id: String(user.id) });
         if (!u) {
             u = new User({ id: String(user.id), first_name: user.first_name || 'User', username: user.username || 'N/A', joined: new Date().toISOString(), last_active_date: today });
             await u.save();
@@ -195,9 +176,7 @@ async function ensureUser(user) {
     } catch(e) { return null; }
 }
 
-async function updateUserStat(userId, type) {
-    try { if (type === 'number') await User.findOneAndUpdate({ id: String(userId) }, { $inc: { total_numbers: 1 } }); } catch(e){}
-}
+async function updateUserStat(userId, type) { try { if (type === 'number') await User.findOneAndUpdate({ id: String(userId) }, { $inc: { total_numbers: 1 } }); } catch(e){} }
 async function updateGlobalStats(type) {
     try {
         let update = {};
@@ -208,38 +187,24 @@ async function updateGlobalStats(type) {
     } catch(e){}
 }
 
-async function loadRanges() {
-    try { const doc = await Setting.findOne({ key: 'platforms' }); return doc && doc.data ? doc.data : {}; } catch(e){ return {}; }
-}
-async function saveRanges(data) {
-    try { await Setting.findOneAndUpdate({ key: 'platforms' }, { data }, { upsert: true }); } catch(e){}
-}
+async function loadRanges() { try { const doc = await Setting.findOne({ key: 'platforms' }); return doc && doc.data ? doc.data : {}; } catch(e){ return {}; } }
+async function saveRanges(data) { try { await Setting.findOneAndUpdate({ key: 'platforms' }, { data }, { upsert: true }); } catch(e){} }
 
 async function updateTraffic(plat, country) {
     try {
         const trafficKey = `${getPlatIcon(plat)} ${plat.toUpperCase()} - ${country.split(' ')[0]}`;
-        const updateStr = `data.${trafficKey}`;
-        await Setting.findOneAndUpdate({ key: 'traffic' }, { $inc: { [updateStr]: 1 } }, { upsert: true });
+        await Setting.findOneAndUpdate({ key: 'traffic' }, { $inc: { [`data.${trafficKey}`]: 1 } }, { upsert: true });
     } catch(e){}
 }
-async function getTraffic() {
-    try { const doc = await Setting.findOne({ key: 'traffic' }); return doc && doc.data ? doc.data : {}; } catch(e){ return {}; }
-}
-async function get2FA(chatId) {
-    try { const u = await User.findOne({ id: String(chatId) }); return u && u.two_fa ? u.two_fa : []; } catch(e){ return []; }
-}
-async function save2FA(chatId, two_fa_list) {
-    try { await User.findOneAndUpdate({ id: String(chatId) }, { two_fa: two_fa_list }); } catch(e){}
-}
+async function getTraffic() { try { const doc = await Setting.findOne({ key: 'traffic' }); return doc && doc.data ? doc.data : {}; } catch(e){ return {}; } }
+async function get2FA(chatId) { try { const u = await User.findOne({ id: String(chatId) }); return u && u.two_fa ? u.two_fa : []; } catch(e){ return []; } }
+async function save2FA(chatId, two_fa_list) { try { await User.findOneAndUpdate({ id: String(chatId) }, { two_fa: two_fa_list }); } catch(e){} }
 
 function getPlatIcon(plat) {
     let p = plat.toLowerCase();
-    if(p.includes('insta')) return '📷';
-    if(p.includes('face')) return '🔵';
-    if(p.includes('whats')) return '🟢';
-    if(p.includes('tele')) return '✈️';
-    if(p.includes('goog')) return '🔴';
-    return '💬';
+    if(p.includes('insta')) return '📷'; if(p.includes('face')) return '🔵';
+    if(p.includes('whats')) return '🟢'; if(p.includes('tele')) return '✈️';
+    if(p.includes('goog')) return '🔴'; return '💬';
 }
 
 function getMainMenu(chatId) {
@@ -282,19 +247,12 @@ function detectLang(text) {
 async function checkForceSub(chatId) {
     if (chatId === ADMIN_ID) return true;
     const channels = ['@developer_walid', '@fireotp_method', OTP_GROUP_ID];
-    let isSubscribed = true;
-    let buttons = [];
+    let isSubscribed = true; let buttons = [];
     for (let ch of channels) {
         try {
             const member = await bot.getChatMember(ch, chatId);
-            if (member.status === 'left' || member.status === 'kicked') {
-                isSubscribed = false;
-                buttons.push([{ text: `📢 Join Channel`, url: `https://t.me/${ch.replace('@', '')}` }]);
-            }
-        } catch (e) {
-            isSubscribed = false;
-            buttons.push([{ text: `📢 Join Channel`, url: `https://t.me/${ch.replace('@', '')}` }]);
-        }
+            if (member.status === 'left' || member.status === 'kicked') { isSubscribed = false; buttons.push([{ text: `📢 Join Channel`, url: `https://t.me/${ch.replace('@', '')}` }]); }
+        } catch (e) { isSubscribed = false; buttons.push([{ text: `📢 Join Channel`, url: `https://t.me/${ch.replace('@', '')}` }]); }
     }
     if (!isSubscribed) {
         buttons.push([{ text: "✅ Joined (Check Again)", callback_data: "check_joined", style: "success" }]);
@@ -326,9 +284,7 @@ async function generateNewNumber(chatId, plat, country, msgIdToEdit = null) {
             const fullPhone = res.data.data.full_number;
             const strippedPhone = fullPhone.replace('+', ''); 
             
-            for(let [num, data] of activeNumbers.entries()) {
-                if(data.chatId === chatId) activeNumbers.delete(num);
-            }
+            for(let [num, data] of activeNumbers.entries()) { if(data.chatId === chatId) activeNumbers.delete(num); }
 
             let sentMsg;
             const boxNumber = `╔════════════════════╗\n║ 📱 \`Wait for auto OTP...\`\n╚════════════════════╝`;
@@ -342,9 +298,7 @@ async function generateNewNumber(chatId, plat, country, msgIdToEdit = null) {
             if (msgIdToEdit) {
                 await bot.editMessageText(text, { chat_id: chatId, message_id: msgIdToEdit, parse_mode: 'Markdown', reply_markup: actionMarkup }).catch(()=>{});
                 sentMsg = { message_id: msgIdToEdit };
-            } else {
-                sentMsg = await bot.sendMessage(chatId, text, { parse_mode: 'Markdown', reply_markup: actionMarkup });
-            }
+            } else { sentMsg = await bot.sendMessage(chatId, text, { parse_mode: 'Markdown', reply_markup: actionMarkup }); }
 
             activeNumbers.set(strippedPhone, { chatId: chatId, plat: plat, country: country, createdAt: Date.now(), msgId: sentMsg.message_id });
             updateUserStat(chatId, 'number'); updateGlobalStats('pending');
@@ -355,7 +309,6 @@ async function generateNewNumber(chatId, plat, country, msgIdToEdit = null) {
             else bot.sendMessage(chatId, outTxt, { parse_mode: 'Markdown' });
         }
     } catch (error) { 
-        // 🔥 এখানে আসল Error মেসেজ ইউজারকে দেখানো হবে যাতে ডিবাগ করা যায়
         const errTxt = `⚠️ *প্যানেল কানেকশন এরর!*\n\n*Reason:* \`${error.message}\`\n\n_দয়া করে Cookie এবং Base URL সঠিক আছে কিনা যাচাই করুন।_`;
         if (msgIdToEdit) bot.editMessageText(errTxt, { chat_id: chatId, message_id: msgIdToEdit, parse_mode: 'Markdown' }).catch(()=>{}); 
         else bot.sendMessage(chatId, errTxt, { parse_mode: 'Markdown' });
