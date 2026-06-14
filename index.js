@@ -15,7 +15,7 @@ const PORT = process.env.PORT || 3000;
 const SERVER_URL = process.env.SERVER_URL; 
 
 app.use(express.json());
-app.get('/', (req, res) => res.send('Premium Fire OTP Bot v17.0 (Deep Linking & Rewards System) is Running!'));
+app.get('/', (req, res) => res.send('Premium Fire OTP Bot v18.0 (Auto Country Detect & UI Fix) is Running!'));
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 
 // --- MongoDB Setup ---
@@ -169,7 +169,6 @@ function getLocDate() {
 async function getAppConfig() {
     try {
         let doc = await Setting.findOne({ key: 'app_config' });
-        // 🟢 Reward system default true
         if (!doc || !doc.data) return { per_otp_rate: 5, min_withdraw: 50, pay_methods: ['Binance'], reward_system: true };
         let config = doc.data;
         if (config.reward_system === undefined) config.reward_system = true;
@@ -245,6 +244,44 @@ function getPlatIcon(plat) {
     if(p.includes('tele')) return '✈️';
     if(p.includes('goog')) return '🔴';
     return '💬';
+}
+
+// 🟢 NEW: কান্ট্রি কোড থেকে অটোমেটিক দেশের নাম বের করার ফাংশন
+function getCountryByCode(range) {
+    if (!range) return "Global";
+    const cleanRange = String(range).replace('+', '');
+    
+    const codeMap = {
+        '224': '🇬🇳 Guinea',
+        '229': '🇧🇯 Benin',
+        '225': '🇨🇮 Ivory Coast',
+        '234': '🇳🇬 Nigeria',
+        '237': '🇨🇲 Cameroon',
+        '221': '🇸🇳 Senegal',
+        '228': '🇹🇬 Togo',
+        '223': '🇲🇱 Mali',
+        '226': '🇧🇫 Burkina Faso',
+        '243': '🇨🇩 DR Congo',
+        '242': '🇨🇬 Congo',
+        '227': '🇳🇪 Niger',
+        '212': '🇲🇦 Morocco',
+        '254': '🇰🇪 Kenya',
+        '233': '🇬🇭 Ghana',
+        '20':  '🇪🇬 Egypt',
+        '27':  '🇿🇦 South Africa',
+        '880': '🇧🇩 Bangladesh',
+        '91':  '🇮🇳 India',
+        '92':  '🇵🇰 Pakistan',
+        '44':  '🇬🇧 UK',
+        '1':   '🇺🇸 USA/Canada'
+    };
+
+    // বড় কোডগুলো আগে ম্যাচ করার জন্য সর্ট করা
+    const prefixes = Object.keys(codeMap).sort((a, b) => b.length - a.length);
+    for (let p of prefixes) {
+        if (cleanRange.startsWith(p)) return codeMap[p];
+    }
+    return "Global";
 }
 
 function getMainMenu(chatId) {
@@ -350,7 +387,6 @@ async function generateNewNumber(chatId, plat, country, panelNameInput = null, r
             const boxNumber = `╔════════════════════╗\n║ 📱 \`Wait for auto OTP...\`\n╚════════════════════╝`;
             const platDisplay = `${getPlatIcon(plat)} ${plat.charAt(0).toUpperCase() + plat.slice(1)}`;
             
-            // 🟢 UI Clean: Removed Source from here
             const text = `📱 *Platform:* ${platDisplay}\n🌍 *Country:* ${country}\n\n${boxNumber}`;
             
             const actionMarkup = { 
@@ -409,7 +445,6 @@ async function generateNewNumber(chatId, plat, country, panelNameInput = null, r
 // ==========================================
 
 let isPollingOTP = false;
-// 🟢 Fast Polling: ৩ সেকেন্ড পরপর
 setInterval(async () => {
     if (activeNumbers.size === 0 || isPollingOTP) return;
     isPollingOTP = true;
@@ -438,7 +473,6 @@ setInterval(async () => {
                         const config = await getAppConfig();
                         let earningText = "";
 
-                        // 🟢 Rewards logic based on Admin settings
                         if (config.reward_system !== false) {
                             let earnedAmount = config.per_otp_rate || 0;
                             await Earning.create({ num_id: otpId, user_id: String(session.chatId), date: getLocDate() });
@@ -464,13 +498,11 @@ setInterval(async () => {
                         updateGlobalStats('success');
                         updateTraffic(session.plat, session.country);
                         
-                        // 🟢 FIX: Keep the Number Message, just remove the Cancel Button
                         const safePhoneText = `📱 +${number}`;
                         bot.editMessageReplyMarkup({ 
                             inline_keyboard: [[{ text: safePhoneText, copy_text: { text: `+${number}` }, style: "primary" }]] 
                         }, { chat_id: session.chatId, message_id: session.msgId }).catch(()=>{});
 
-                        // 🟢 NEW Format for User Output
                         const formatPhone = '+' + number;
                         const platDisplay = `${getPlatIcon(session.plat)} ${session.plat.charAt(0).toUpperCase() + session.plat.slice(1)}`;
                         const boxNumber = `╔════════════════════╗\n║ 📱 \`${formatPhone}\` ║ LN- ${detectedLang}\n╚════════════════════╝`;
@@ -501,7 +533,6 @@ setInterval(async () => {
     if (isPollingFeed) return;
     isPollingFeed = true;
     
-    // Load ranges once to map country names for the console feed
     const rangesDb = await loadRanges();
 
     for (const pName of ['stexsms', 'voltxsms']) {
@@ -525,8 +556,8 @@ setInterval(async () => {
                         
                         const otpCode = extractOTP(hit.message);
                         
-                        // 🟢 Match Country from DB
-                        let consoleCountry = "Global / Unknown";
+                        // 🟢 Auto Country Detect (DB or from Helper Function)
+                        let consoleCountry = getCountryByCode(hit.range);
                         for (const [plat, countries] of Object.entries(rangesDb)) {
                             for (const [cName, data] of Object.entries(countries)) {
                                 let rVal = typeof data === 'string' ? data : data.range;
@@ -536,15 +567,15 @@ setInterval(async () => {
                             }
                         }
 
-                        // 🟢 Deep Link configuration
                         const safeSid = (hit.sid || 'App').replace(/[^a-zA-Z0-9]/g, '');
                         const deepLinkUrl = `https://t.me/${botUsername}?start=gn_${pName}_${hit.range}_${safeSid}`;
 
-                        const msg = `🎉 *New OTP Received* 🎉\n\n📱 *Platform:* ${hit.sid || 'Unknown'}\n🌍 *Country:* ${consoleCountry}\n🎯 *Range:* \`${hit.range}\`\n\n💬 *SMS:* \`${hit.message}\``;
+                        // 🟢 UI Update: "Number" instead of "Range", removed Global Text
+                        const msg = `🎉 *New OTP Received* 🎉\n\n📱 *Platform:* ${hit.sid || 'Unknown'}\n🌍 *Country:* ${consoleCountry}\n🎯 *Number:* \`${hit.range}\`\n\n💬 *SMS:* \`${hit.message}\``;
                         const markup = { 
                             inline_keyboard: [
                                 [{ text: `  ${otpCode}`, copy_text: { text: otpCode }, style: "success" }],
-                                [{ text: "🚀 Get Number From This Range", url: deepLinkUrl }]
+                                [{ text: "🚀 Get Number From This Range", url: deepLinkUrl, style: "primary" }] // 🟢 Added primary style
                             ] 
                         };
                         
@@ -567,15 +598,14 @@ bot.onText(/\/start(.*)/, async (msg, match) => {
     if (u && u.banned) return bot.sendMessage(chatId, "🚫 *You are banned from using this bot.*", { parse_mode: 'Markdown' });
     if (!(await checkForceSub(chatId))) return;
 
-    // 🟢 DEEP LINK HANDLER: Get Number From Group Range
     if (param.startsWith('gn_')) {
-        const parts = param.split('_'); // gn, panel, range, plat
+        const parts = param.split('_');
         if(parts.length >= 4) {
            const pName = parts[1];
            const reqRange = parts[2];
            const platName = parts.slice(3).join(' ');
            
-           let foundCountry = "Custom Range";
+           let foundCountry = getCountryByCode(reqRange);
            const ranges = await loadRanges();
            for (const [p, countries] of Object.entries(ranges)) {
                for (const [c, data] of Object.entries(countries)) {
@@ -897,7 +927,6 @@ bot.on('callback_query', async (query) => {
             bot.sendDocument(chatId, buffer, {}, { filename: 'users.txt', contentType: 'text/plain' }).catch(()=>{});
         }
         
-        // 🟢 FIX: Added Reward Toggle Button
         else if (data === "adm_paycfg" && chatId === ADMIN_ID) {
             const config = await getAppConfig();
             let msg = `💳 *Payment Settings*\n\n💰 *Per OTP Earning:* \`${config.per_otp_rate}\` ৳\n📉 *Min Withdraw:* \`${config.min_withdraw}\` ৳\n\n💳 *Methods:* ${config.pay_methods.join(', ') || 'None'}`;
@@ -914,7 +943,6 @@ bot.on('callback_query', async (query) => {
             config.reward_system = !config.reward_system;
             await saveAppConfig(config);
             bot.answerCallbackQuery(query.id, { text: `Reward System turned ${config.reward_system ? 'ON' : 'OFF'}`, show_alert: false });
-            // Refresh menu
             let msg = `💳 *Payment Settings*\n\n💰 *Per OTP Earning:* \`${config.per_otp_rate}\` ৳\n📉 *Min Withdraw:* \`${config.min_withdraw}\` ৳\n\n💳 *Methods:* ${config.pay_methods.join(', ') || 'None'}`;
             let kb = [
                 [{ text: `🎁 Reward System: ${config.reward_system ? "ON 🟢" : "OFF 🔴"}`, callback_data: "adm_tog_reward", style: "primary" }],
@@ -1105,7 +1133,6 @@ bot.on('callback_query', async (query) => {
             await generateNewNumber(chatId, plat, country, null, null, null);
             bot.answerCallbackQuery(query.id);
         }
-        // 🟢 FIX: Specific Cancel Button for Multi-tasking
         else if (data.startsWith('cancel_')) {
             const num = data.split('_')[1];
             const session = activeNumbers.get(num);
@@ -1129,4 +1156,4 @@ Promise.all([loadPanelKeys()]).then(() => {
     console.log("🔑 DB Settings Loaded.");
 });
 
-console.log("🚀 V17.0 Multi-Tasking & Deep Link System Booted Successfully!");
+console.log("🚀 V18.0 Auto Country Detect & UI Fix Booted Successfully!");
