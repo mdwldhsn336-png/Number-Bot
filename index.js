@@ -15,7 +15,7 @@ const PORT = process.env.PORT || 3000;
 const SERVER_URL = process.env.SERVER_URL; 
 
 app.use(express.json());
-app.get('/', (req, res) => res.send('Premium Fire OTP Bot v18.0 (Auto Country Detect & UI Fix) is Running!'));
+app.get('/', (req, res) => res.send('Premium Fire OTP Bot v19.0 (Smart Platform Detect & Auto New Number) is Running!'));
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 
 // --- MongoDB Setup ---
@@ -149,6 +149,7 @@ async function panelRequest(method, endpoint, data = null, panelName = 'stexsms'
 const activeNumbers = new Map(); 
 const deliveredOtps = new Set();
 const seenConsoleHits = new Set();
+const userLastSession = new Map(); // 🟢 NEW: To remember user's last platform & country for quick New Number
 
 setInterval(() => {
     const now = Date.now();
@@ -246,7 +247,6 @@ function getPlatIcon(plat) {
     return '💬';
 }
 
-// 🟢 NEW: কান্ট্রি কোড থেকে অটোমেটিক দেশের নাম বের করার ফাংশন
 function getCountryByCode(range) {
     if (!range) return "Global";
     const cleanRange = String(range).replace('+', '');
@@ -276,7 +276,6 @@ function getCountryByCode(range) {
         '1':   '🇺🇸 USA/Canada'
     };
 
-    // বড় কোডগুলো আগে ম্যাচ করার জন্য সর্ট করা
     const prefixes = Object.keys(codeMap).sort((a, b) => b.length - a.length);
     for (let p of prefixes) {
         if (cleanRange.startsWith(p)) return codeMap[p];
@@ -467,6 +466,9 @@ setInterval(async () => {
                         const session = activeNumbers.get(number);
                         deliveredOtps.add(otpId);
                         
+                        // 🟢 Remember session for "Get New Number" feature
+                        userLastSession.set(session.chatId, { plat: session.plat, country: session.country, panel: session.panel });
+
                         const otpCode = extractOTP(otpData.message);
                         const detectedLang = detectLang(otpData.message);
                         
@@ -556,7 +558,6 @@ setInterval(async () => {
                         
                         const otpCode = extractOTP(hit.message);
                         
-                        // 🟢 Auto Country Detect (DB or from Helper Function)
                         let consoleCountry = getCountryByCode(hit.range);
                         for (const [plat, countries] of Object.entries(rangesDb)) {
                             for (const [cName, data] of Object.entries(countries)) {
@@ -567,15 +568,24 @@ setInterval(async () => {
                             }
                         }
 
-                        const safeSid = (hit.sid || 'App').replace(/[^a-zA-Z0-9]/g, '');
+                        // 🟢 Smart Platform Detect (Overrides wrong panel SIDs)
+                        let displaySid = hit.sid || 'Unknown';
+                        const lowerMsg = hit.message.toLowerCase();
+                        if (lowerMsg.includes('instagram') || lowerMsg.includes('ig code')) displaySid = 'Instagram';
+                        else if (lowerMsg.includes('facebook') || lowerMsg.includes('fb')) displaySid = 'Facebook';
+                        else if (lowerMsg.includes('whatsapp') || lowerMsg.includes('wa')) displaySid = 'WhatsApp';
+                        else if (lowerMsg.includes('telegram') || lowerMsg.includes('tg')) displaySid = 'Telegram';
+                        else if (lowerMsg.includes('google') || lowerMsg.includes('gmail') || lowerMsg.includes('g-')) displaySid = 'Google';
+                        else if (lowerMsg.includes('tiktok')) displaySid = 'TikTok';
+
+                        const safeSid = displaySid.replace(/[^a-zA-Z0-9]/g, '');
                         const deepLinkUrl = `https://t.me/${botUsername}?start=gn_${pName}_${hit.range}_${safeSid}`;
 
-                        // 🟢 UI Update: "Number" instead of "Range", removed Global Text
-                        const msg = `🎉 *New OTP Received* 🎉\n\n📱 *Platform:* ${hit.sid || 'Unknown'}\n🌍 *Country:* ${consoleCountry}\n🎯 *Number:* \`${hit.range}\`\n\n💬 *SMS:* \`${hit.message}\``;
+                        const msg = `🎉 *New OTP Received* 🎉\n\n📱 *Platform:* ${displaySid}\n🌍 *Country:* ${consoleCountry}\n🎯 *Number:* \`${hit.range}\`\n\n💬 *SMS:* \`${hit.message}\``;
                         const markup = { 
                             inline_keyboard: [
                                 [{ text: `  ${otpCode}`, copy_text: { text: otpCode }, style: "success" }],
-                                [{ text: "🚀 Get Number From This Range", url: deepLinkUrl, style: "primary" }] // 🟢 Added primary style
+                                [{ text: "🚀 Get Number From This Range", url: deepLinkUrl, style: "primary" }] 
                             ] 
                         };
                         
@@ -1145,8 +1155,16 @@ bot.on('callback_query', async (query) => {
             }
             bot.answerCallbackQuery(query.id);
         }
+        // 🟢 FIX: "Get New Number" now correctly remembers the last platform/country and generates directly!
         else if (data === "get_new_num") {
-            bot.sendMessage(chatId, "📌 *Go to GET NUMBER from menu to start again.*", { parse_mode: 'Markdown' });
+            const lastSession = userLastSession.get(chatId);
+            if (lastSession) {
+                bot.sendMessage(chatId, "🚀 *Generating requested number...*", {parse_mode: 'Markdown'}).then(sentMsg => {
+                    generateNewNumber(chatId, lastSession.plat, lastSession.country, lastSession.panel, null, sentMsg.message_id);
+                });
+            } else {
+                bot.sendMessage(chatId, "📌 *Session expired. Go to GET NUMBER from menu to start again.*", { parse_mode: 'Markdown' });
+            }
             bot.answerCallbackQuery(query.id);
         }
     } catch(e) { bot.answerCallbackQuery(query.id, { text: "⚠️ Error processing request!", show_alert: true }); }
@@ -1156,4 +1174,4 @@ Promise.all([loadPanelKeys()]).then(() => {
     console.log("🔑 DB Settings Loaded.");
 });
 
-console.log("🚀 V18.0 Auto Country Detect & UI Fix Booted Successfully!");
+console.log("🚀 V19.0 Smart Detection & Auto New Number Booted!");
