@@ -15,7 +15,7 @@ const PORT = process.env.PORT || 3000;
 const SERVER_URL = process.env.SERVER_URL; 
 
 app.use(express.json());
-app.get('/', (req, res) => res.send('Premium Fire OTP Bot v16.0 (Multi-Tasking & Super Fast) is Running!'));
+app.get('/', (req, res) => res.send('Premium Fire OTP Bot v17.0 (Deep Linking & Rewards System) is Running!'));
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 
 // --- MongoDB Setup ---
@@ -88,6 +88,9 @@ if (SERVER_URL) {
     console.log(`⚠️ Polling mode activated.`);
 }
 
+let botUsername = "";
+bot.getMe().then(me => { botUsername = me.username; });
+
 let adminState = {};
 let userState = {};
 
@@ -116,7 +119,7 @@ async function savePanelKey(panel, key) {
     await Setting.findOneAndUpdate({ key: 'panel_keys' }, { data: panelKeys }, { upsert: true });
 }
 
-// 🟢 API Request Header Anti-Bot Config
+// 🟢 API Request
 async function panelRequest(method, endpoint, data = null, panelName = 'stexsms') {
     const key = panelKeys[panelName];
     if (!key) throw new Error(`NO_API_KEY_${panelName}`);
@@ -137,9 +140,7 @@ async function panelRequest(method, endpoint, data = null, panelName = 'stexsms'
         } else {
             return await axios.get(url, { headers, timeout: 15000 });
         }
-    } catch (e) { 
-        throw e; 
-    }
+    } catch (e) { throw e; }
 }
 
 // ==========================================
@@ -168,9 +169,12 @@ function getLocDate() {
 async function getAppConfig() {
     try {
         let doc = await Setting.findOne({ key: 'app_config' });
-        if (!doc || !doc.data) return { per_otp_rate: 5, min_withdraw: 50, pay_methods: ['Binance'] };
-        return doc.data;
-    } catch(e) { return { per_otp_rate: 5, min_withdraw: 50, pay_methods: ['Binance'] }; }
+        // 🟢 Reward system default true
+        if (!doc || !doc.data) return { per_otp_rate: 5, min_withdraw: 50, pay_methods: ['Binance'], reward_system: true };
+        let config = doc.data;
+        if (config.reward_system === undefined) config.reward_system = true;
+        return config;
+    } catch(e) { return { per_otp_rate: 5, min_withdraw: 50, pay_methods: ['Binance'], reward_system: true }; }
 }
 async function saveAppConfig(data) { await Setting.findOneAndUpdate({ key: 'app_config' }, { data }, { upsert: true }); }
 
@@ -312,20 +316,23 @@ async function checkForceSub(chatId) {
     return true;
 }
 
-// 🟢 Fast Number Generation (Multi-Tasking Supported)
-async function generateNewNumber(chatId, plat, country, msgIdToEdit = null) {
+// 🟢 Fast Number Generation (Multi-Tasking)
+async function generateNewNumber(chatId, plat, country, panelNameInput = null, rangeValInput = null, msgIdToEdit = null) {
     const ranges = await loadRanges(); 
-    const rangeData = ranges[plat]?.[country];
-    
-    if (!rangeData) {
-        const errTxt = "❌ *সার্ভারে এই মুহূর্তে কোনো রেঞ্জ নেই।*";
-        if (msgIdToEdit) bot.editMessageText(errTxt, {chat_id: chatId, message_id: msgIdToEdit, parse_mode: 'Markdown'}).catch(()=>{});
-        else bot.sendMessage(chatId, errTxt, {parse_mode: 'Markdown'});
-        return;
+    let rangeVal = rangeValInput;
+    let panelName = panelNameInput;
+
+    if (!rangeValInput || !panelNameInput) {
+        const rangeData = ranges[plat]?.[country];
+        if (!rangeData) {
+            const errTxt = "❌ *সার্ভারে এই মুহূর্তে কোনো রেঞ্জ নেই।*";
+            if (msgIdToEdit) bot.editMessageText(errTxt, {chat_id: chatId, message_id: msgIdToEdit, parse_mode: 'Markdown'}).catch(()=>{});
+            else bot.sendMessage(chatId, errTxt, {parse_mode: 'Markdown'});
+            return;
+        }
+        rangeVal = typeof rangeData === 'string' ? rangeData : rangeData.range;
+        panelName = typeof rangeData === 'string' ? 'stexsms' : (rangeData.panel || 'stexsms');
     }
-    
-    const rangeVal = typeof rangeData === 'string' ? rangeData : rangeData.range;
-    const panelName = typeof rangeData === 'string' ? 'stexsms' : (rangeData.panel || 'stexsms');
     
     let cleanRange = rangeVal.trim();
     if (cleanRange.toUpperCase().includes('XXX')) {
@@ -339,19 +346,17 @@ async function generateNewNumber(chatId, plat, country, msgIdToEdit = null) {
             const fullPhone = res.data.data.full_number;
             const strippedPhone = fullPhone.replace('+', ''); 
             
-            // 🟢 Multi-Tasking Fix: আগের নাম্বার ডিলিট না করে নতুনটিও লিস্টে অ্যাড হবে।
-            // User চাইলে একসাথে অনেকগুলো নাম্বার নিতে পারবে এবং সবগুলোর জন্যই পোলিং চলবে।
-
             let sentMsg;
             const boxNumber = `╔════════════════════╗\n║ 📱 \`Wait for auto OTP...\`\n╚════════════════════╝`;
             const platDisplay = `${getPlatIcon(plat)} ${plat.charAt(0).toUpperCase() + plat.slice(1)}`;
-            const text = `📱 *Platform:* ${platDisplay}\n🌍 *Country:* ${country}\n🔌 *Source:* ${panelName.toUpperCase()}\n\n${boxNumber}`;
             
-            // স্পেসিফিক নাম্বারের জন্য Change Button
+            // 🟢 UI Clean: Removed Source from here
+            const text = `📱 *Platform:* ${platDisplay}\n🌍 *Country:* ${country}\n\n${boxNumber}`;
+            
             const actionMarkup = { 
                 inline_keyboard: [
                     [{ text: `📱 ${fullPhone}`, copy_text: { text: fullPhone }, style: "primary" }],
-                    [{ text: "🔁 Change Number", callback_data: `change_${strippedPhone}`, style: "danger" }]
+                    [{ text: "❌ Cancel Number", callback_data: `cancel_${strippedPhone}`, style: "danger" }]
                 ] 
             };
 
@@ -404,7 +409,7 @@ async function generateNewNumber(chatId, plat, country, msgIdToEdit = null) {
 // ==========================================
 
 let isPollingOTP = false;
-// 🟢 Fast Polling: ৩ সেকেন্ড পরপর কল করবে
+// 🟢 Fast Polling: ৩ সেকেন্ড পরপর
 setInterval(async () => {
     if (activeNumbers.size === 0 || isPollingOTP) return;
     isPollingOTP = true;
@@ -430,35 +435,45 @@ setInterval(async () => {
                         const otpCode = extractOTP(otpData.message);
                         const detectedLang = detectLang(otpData.message);
                         
-                        let earnedAmount = 0;
                         const config = await getAppConfig();
-                        const rate = config.per_otp_rate || 0;
-                        earnedAmount = rate;
-                        
-                        await Earning.create({ num_id: otpId, user_id: String(session.chatId), date: getLocDate() });
-                        
-                        const uDoc = await User.findOne({ id: String(session.chatId) });
-                        if(uDoc) {
-                            uDoc.balance = parseFloat((uDoc.balance + rate).toFixed(2));
-                            uDoc.today_balance = parseFloat((uDoc.today_balance + rate).toFixed(2));
-                            uDoc.total_otps += 1;
-                            uDoc.today_otps += 1;
-                            await uDoc.save();
+                        let earningText = "";
+
+                        // 🟢 Rewards logic based on Admin settings
+                        if (config.reward_system !== false) {
+                            let earnedAmount = config.per_otp_rate || 0;
+                            await Earning.create({ num_id: otpId, user_id: String(session.chatId), date: getLocDate() });
+                            
+                            const uDoc = await User.findOne({ id: String(session.chatId) });
+                            if(uDoc) {
+                                uDoc.balance = parseFloat((uDoc.balance + earnedAmount).toFixed(2));
+                                uDoc.today_balance = parseFloat((uDoc.today_balance + earnedAmount).toFixed(2));
+                                uDoc.total_otps += 1;
+                                uDoc.today_otps += 1;
+                                await uDoc.save();
+                                earningText = `\n\n🎉 *Congratulations! Boss*\n💰 *Earned:* \`${parseFloat(earnedAmount.toFixed(2))}\` ৳\n💳 *Total Balance:* \`${parseFloat(uDoc.balance.toFixed(2))}\` ৳`;
+                            }
+                        } else {
+                            const uDoc = await User.findOne({ id: String(session.chatId) });
+                            if(uDoc) {
+                                uDoc.total_otps += 1;
+                                uDoc.today_otps += 1;
+                                await uDoc.save();
+                            }
                         }
+
                         updateGlobalStats('success');
                         updateTraffic(session.plat, session.country);
                         
-                        // 🟢 FIX: আগের নাম্বার মেসেজটি ডিলিট না করে শুধু "Change Number" বাটন রিমুভ করবে
+                        // 🟢 FIX: Keep the Number Message, just remove the Cancel Button
                         const safePhoneText = `📱 +${number}`;
                         bot.editMessageReplyMarkup({ 
                             inline_keyboard: [[{ text: safePhoneText, copy_text: { text: `+${number}` }, style: "primary" }]] 
                         }, { chat_id: session.chatId, message_id: session.msgId }).catch(()=>{});
 
-                        // নতুন মেসেজ আকারে OTP সেন্ড করবে
+                        // 🟢 NEW Format for User Output
                         const formatPhone = '+' + number;
                         const platDisplay = `${getPlatIcon(session.plat)} ${session.plat.charAt(0).toUpperCase() + session.plat.slice(1)}`;
                         const boxNumber = `╔════════════════════╗\n║ 📱 \`${formatPhone}\` ║ LN- ${detectedLang}\n╚════════════════════╝`;
-                        let earningText = `💰 *Earned:* \`${parseFloat(earnedAmount.toFixed(2))}\` ৳\n💳 *Total Balance:* \`${parseFloat(uDoc.balance.toFixed(2))}\` ৳`;
                         
                         const otpMarkup = { 
                             inline_keyboard: [
@@ -470,7 +485,7 @@ setInterval(async () => {
                             ] 
                         };
                         
-                        bot.sendMessage(session.chatId, `🔔 *AUTO OTP RECEIVED!*\n\n📱 *Platform:* ${platDisplay}\n🌍 *Country:* ${session.country}\n\n${boxNumber}\n\n🎉 *Congratulations! Boss*\n${earningText}`, { parse_mode: 'Markdown', reply_markup: otpMarkup }).catch(()=>{});
+                        bot.sendMessage(session.chatId, `🎉 *New OTP Received* 🎉\n\n📱 *Platform:* ${platDisplay}\n🌍 *Country:* ${session.country}\n\n${boxNumber}${earningText}`, { parse_mode: 'Markdown', reply_markup: otpMarkup }).catch(()=>{});
                         
                         activeNumbers.delete(number);
                     }
@@ -479,12 +494,15 @@ setInterval(async () => {
         } catch(e) { }
     }
     isPollingOTP = false;
-}, 3000); // 3 Seconds Interval For Super Fast Delivery
+}, 3000); 
 
 let isPollingFeed = false;
 setInterval(async () => {
     if (isPollingFeed) return;
     isPollingFeed = true;
+    
+    // Load ranges once to map country names for the console feed
+    const rangesDb = await loadRanges();
 
     for (const pName of ['stexsms', 'voltxsms']) {
         if (!panelKeys[pName]) continue;
@@ -506,11 +524,27 @@ setInterval(async () => {
                         }
                         
                         const otpCode = extractOTP(hit.message);
-                        const msg = `🌐 *GLOBAL LIVE OTP* 🌐\n\n📱 *Platform:* ${hit.sid || 'Unknown'}\n🎯 *Range:* \`${hit.range}\`\n🔌 *Source:* ${pName.toUpperCase()}\n\n💬 *SMS:* \`${hit.message}\`\n\n💡 _Get your number from the bot!_`;
+                        
+                        // 🟢 Match Country from DB
+                        let consoleCountry = "Global / Unknown";
+                        for (const [plat, countries] of Object.entries(rangesDb)) {
+                            for (const [cName, data] of Object.entries(countries)) {
+                                let rVal = typeof data === 'string' ? data : data.range;
+                                if (rVal === hit.range || rVal.replace(/XXX/ig, '') === hit.range.replace(/XXX/ig, '')) {
+                                    consoleCountry = cName;
+                                }
+                            }
+                        }
+
+                        // 🟢 Deep Link configuration
+                        const safeSid = (hit.sid || 'App').replace(/[^a-zA-Z0-9]/g, '');
+                        const deepLinkUrl = `https://t.me/${botUsername}?start=gn_${pName}_${hit.range}_${safeSid}`;
+
+                        const msg = `🎉 *New OTP Received* 🎉\n\n📱 *Platform:* ${hit.sid || 'Unknown'}\n🌍 *Country:* ${consoleCountry}\n🎯 *Range:* \`${hit.range}\`\n\n💬 *SMS:* \`${hit.message}\``;
                         const markup = { 
                             inline_keyboard: [
                                 [{ text: `  ${otpCode}`, copy_text: { text: otpCode }, style: "success" }],
-                                [{ text: "🚀 Get Number From This Range", url: `https://t.me/${(await bot.getMe()).username}?start=GET_NUM` }]
+                                [{ text: "🚀 Get Number From This Range", url: deepLinkUrl }]
                             ] 
                         };
                         
@@ -525,12 +559,42 @@ setInterval(async () => {
 
 
 // --- Commands & Messages ---
-bot.onText(/\/start/, async (msg) => {
+bot.onText(/\/start(.*)/, async (msg, match) => {
+    const chatId = msg.chat.id;
+    const param = match[1].trim();
+    
     const u = await ensureUser(msg.from);
-    if (u && u.banned) return bot.sendMessage(msg.chat.id, "🚫 *You are banned from using this bot.*", { parse_mode: 'Markdown' });
-    if (!(await checkForceSub(msg.chat.id))) return;
+    if (u && u.banned) return bot.sendMessage(chatId, "🚫 *You are banned from using this bot.*", { parse_mode: 'Markdown' });
+    if (!(await checkForceSub(chatId))) return;
+
+    // 🟢 DEEP LINK HANDLER: Get Number From Group Range
+    if (param.startsWith('gn_')) {
+        const parts = param.split('_'); // gn, panel, range, plat
+        if(parts.length >= 4) {
+           const pName = parts[1];
+           const reqRange = parts[2];
+           const platName = parts.slice(3).join(' ');
+           
+           let foundCountry = "Custom Range";
+           const ranges = await loadRanges();
+           for (const [p, countries] of Object.entries(ranges)) {
+               for (const [c, data] of Object.entries(countries)) {
+                   let r = typeof data === 'string' ? data : data.range;
+                   if (r === reqRange || r.replace(/XXX/ig, '') === reqRange.replace(/XXX/ig, '')) {
+                       foundCountry = c;
+                   }
+               }
+           }
+           
+           bot.sendMessage(chatId, "🚀 *Generating requested number...*", {parse_mode: 'Markdown'}).then(sentMsg => {
+               generateNewNumber(chatId, platName, foundCountry, pName, reqRange, sentMsg.message_id);
+           });
+           return;
+        }
+    }
+
     const welcomeMsg = ` 💐*WELCOME TO FIRE OTP BOT*\n\n👋 Hello, *${msg.from.first_name}*!\n\n🚀 _Get unlimited virtual numbers and instant OTPs for any platform in seconds._\n\n👇 Please choose an option from the menu below:`;
-    bot.sendMessage(msg.chat.id, welcomeMsg, { parse_mode: 'Markdown', ...getMainMenu(msg.chat.id) });
+    bot.sendMessage(chatId, welcomeMsg, { parse_mode: 'Markdown', ...getMainMenu(chatId) });
 });
 
 bot.on('message', async (msg) => {
@@ -832,10 +896,28 @@ bot.on('callback_query', async (query) => {
             const buffer = Buffer.from(userList, 'utf-8');
             bot.sendDocument(chatId, buffer, {}, { filename: 'users.txt', contentType: 'text/plain' }).catch(()=>{});
         }
+        
+        // 🟢 FIX: Added Reward Toggle Button
         else if (data === "adm_paycfg" && chatId === ADMIN_ID) {
             const config = await getAppConfig();
             let msg = `💳 *Payment Settings*\n\n💰 *Per OTP Earning:* \`${config.per_otp_rate}\` ৳\n📉 *Min Withdraw:* \`${config.min_withdraw}\` ৳\n\n💳 *Methods:* ${config.pay_methods.join(', ') || 'None'}`;
             let kb = [
+                [{ text: `🎁 Reward System: ${config.reward_system ? "ON 🟢" : "OFF 🔴"}`, callback_data: "adm_tog_reward", style: "primary" }],
+                [{ text: "✏️ Edit Earning/OTP", callback_data: "adm_edit_otprate", style: "primary" }, { text: "✏️ Edit Min Withdraw", callback_data: "adm_edit_minwd", style: "primary" }],
+                [{ text: "➕ Add Method", callback_data: "adm_add_paym", style: "success" }, { text: "🗑️ Delete Method", callback_data: "adm_del_paym", style: "danger" }],
+                [{ text: "🔙 Back", callback_data: "admin_main", style: "danger" }]
+            ];
+            bot.editMessageText(msg, { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown', reply_markup: { inline_keyboard: kb } });
+        }
+        else if (data === "adm_tog_reward" && chatId === ADMIN_ID) {
+            const config = await getAppConfig();
+            config.reward_system = !config.reward_system;
+            await saveAppConfig(config);
+            bot.answerCallbackQuery(query.id, { text: `Reward System turned ${config.reward_system ? 'ON' : 'OFF'}`, show_alert: false });
+            // Refresh menu
+            let msg = `💳 *Payment Settings*\n\n💰 *Per OTP Earning:* \`${config.per_otp_rate}\` ৳\n📉 *Min Withdraw:* \`${config.min_withdraw}\` ৳\n\n💳 *Methods:* ${config.pay_methods.join(', ') || 'None'}`;
+            let kb = [
+                [{ text: `🎁 Reward System: ${config.reward_system ? "ON 🟢" : "OFF 🔴"}`, callback_data: "adm_tog_reward", style: "primary" }],
                 [{ text: "✏️ Edit Earning/OTP", callback_data: "adm_edit_otprate", style: "primary" }, { text: "✏️ Edit Min Withdraw", callback_data: "adm_edit_minwd", style: "primary" }],
                 [{ text: "➕ Add Method", callback_data: "adm_add_paym", style: "success" }, { text: "🗑️ Delete Method", callback_data: "adm_del_paym", style: "danger" }],
                 [{ text: "🔙 Back", callback_data: "admin_main", style: "danger" }]
@@ -1020,28 +1102,21 @@ bot.on('callback_query', async (query) => {
         else if (data.startsWith('u_cntry_')) {
             const parts = data.split('_'); const plat = parts[2]; const country = parts.slice(3).join('_');
             bot.deleteMessage(chatId, msgId).catch(()=>{});
-            await generateNewNumber(chatId, plat, country, null);
+            await generateNewNumber(chatId, plat, country, null, null, null);
             bot.answerCallbackQuery(query.id);
         }
-        // 🟢 FIX: Specific Cancel Button for specific active number
-        else if (data.startsWith('change_')) {
+        // 🟢 FIX: Specific Cancel Button for Multi-tasking
+        else if (data.startsWith('cancel_')) {
             const num = data.split('_')[1];
             const session = activeNumbers.get(num);
             
             if (session && session.chatId === chatId) {
-                const plat = session.plat;
-                const country = session.country;
                 activeNumbers.delete(num);
-                bot.editMessageText("❌ *Number Cancelled. Generating New...*", { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown' }).catch(()=>{});
-                await generateNewNumber(chatId, plat, country, msgId);
+                bot.editMessageText("❌ *Number Cancelled.*", { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown' }).catch(()=>{});
             } else { 
-                // Either session expired, OTP already received, or it's an old button.
                 bot.editMessageText("❌ *Session Expired or Already Processed.*", { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown' }).catch(()=>{}); 
             }
             bot.answerCallbackQuery(query.id);
-        }
-        else if (data === "change_num") {
-            bot.answerCallbackQuery(query.id, {text: "This old button is expired. Generate a new number.", show_alert: true});
         }
         else if (data === "get_new_num") {
             bot.sendMessage(chatId, "📌 *Go to GET NUMBER from menu to start again.*", { parse_mode: 'Markdown' });
@@ -1051,7 +1126,7 @@ bot.on('callback_query', async (query) => {
 });
 
 Promise.all([loadPanelKeys()]).then(() => {
-    console.log("🔑 API settings loaded from DB.");
+    console.log("🔑 DB Settings Loaded.");
 });
 
-console.log("🚀 V16.0 Final System Booted Successfully!");
+console.log("🚀 V17.0 Multi-Tasking & Deep Link System Booted Successfully!");
