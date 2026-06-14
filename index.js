@@ -15,7 +15,7 @@ const PORT = process.env.PORT || 3000;
 const SERVER_URL = process.env.SERVER_URL; 
 
 app.use(express.json());
-app.get('/', (req, res) => res.send('Premium Fire OTP Bot v12.5 (Super Fast & Auto Debugger) is Running!'));
+app.get('/', (req, res) => res.send('Premium Fire OTP Bot v13.0 (Anti-Block & Super Fast) is Running!'));
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 
 // --- MongoDB Setup ---
@@ -112,21 +112,35 @@ async function loadPanelKeys() {
 }
 
 async function savePanelKey(panel, key) {
-    panelKeys[panel] = key;
+    panelKeys[panel] = key.trim(); // Remove accidental spaces
     await Setting.findOneAndUpdate({ key: 'panel_keys' }, { data: panelKeys }, { upsert: true });
 }
 
+// 🟢 FIX: Added strict Headers and User-Agent to prevent Server Blocks/Timeouts
 async function panelRequest(method, endpoint, data = null, panelName = 'stexsms') {
     const key = panelKeys[panelName];
     if (!key) throw new Error(`NO_API_KEY_${panelName}`);
     
-    const headers = { 'mauthapi': key };
     const url = `${PANELS[panelName].url}${endpoint}`;
     
+    // Cloudflare/Server Anti-bot Bypass Headers
+    const headers = { 
+        'mauthapi': key.trim(),
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Connection': 'keep-alive'
+    };
+    
     try {
-        if(method === 'post') return await axios.post(url, data, { headers, timeout: 10000 });
-        return await axios.get(url, { headers, timeout: 10000 });
-    } catch (e) { throw e; }
+        if(method === 'post') {
+            return await axios.post(url, data, { headers, timeout: 20000 }); // Increased timeout to 20s just in case
+        } else {
+            return await axios.get(url, { headers, timeout: 20000 });
+        }
+    } catch (e) { 
+        throw e; 
+    }
 }
 
 // ==========================================
@@ -299,7 +313,7 @@ async function checkForceSub(chatId) {
     return true;
 }
 
-// 🟢 Fast Number Generation (With Auto Debugger for Admin)
+// 🟢 Fast Number Generation
 async function generateNewNumber(chatId, plat, country, msgIdToEdit = null) {
     const ranges = await loadRanges(); 
     const rangeData = ranges[plat]?.[country];
@@ -314,10 +328,9 @@ async function generateNewNumber(chatId, plat, country, msgIdToEdit = null) {
     const rangeVal = typeof rangeData === 'string' ? rangeData : rangeData.range;
     const panelName = typeof rangeData === 'string' ? 'stexsms' : (rangeData.panel || 'stexsms');
     
-    // ফিক্স: স্পেস বা আননেসেসারি ক্যারেক্টার রিমুভ করা হয়েছে, কিন্তু XXX থাকলে ডকুমেন্টেশন অনুযায়ী সেটা রিমুভ করার চেষ্টা করবে
     let cleanRange = rangeVal.trim();
     if (cleanRange.toUpperCase().includes('XXX')) {
-        cleanRange = cleanRange.replace(/XXX/ig, ''); // "no XXX" রুল অ্যাপ্লাইড
+        cleanRange = cleanRange.replace(/XXX/ig, ''); 
     }
 
     try {
@@ -362,29 +375,22 @@ async function generateNewNumber(chatId, plat, country, msgIdToEdit = null) {
             updateGlobalStats('pending');
             
         } else {
-            // নরমাল ইউজারদের জন্য
             let outTxt = "❌ *নাম্বার স্টকে নেই বা রেঞ্জ ভুল দেওয়া হয়েছে!*";
-            
-            // অ্যাডমিনকে এক্সাক্ট API রেসপন্স দেখানো হবে
-            if (chatId === ADMIN_ID) {
-                outTxt = `⚠️ *Admin Debug:* Number Not Allocated.\nAPI Response: \`${JSON.stringify(res.data)}\``;
-            }
+            if (chatId === ADMIN_ID) outTxt = `⚠️ *Admin Debug:* Number Not Allocated.\nAPI Response: \`${JSON.stringify(res.data)}\``;
 
             if (msgIdToEdit) bot.editMessageText(outTxt, { chat_id: chatId, message_id: msgIdToEdit, parse_mode: 'Markdown' }).catch(()=>{});
             else bot.sendMessage(chatId, outTxt, { parse_mode: 'Markdown' });
         }
     } catch (error) { 
-        // নরমাল ইউজারদের জন্য ক্লিন এরর মেসেজ
         let errTxt = "⚠️ *সার্ভার সাময়িক ব্যস্ত আছে। একটু পর আবার চেষ্টা করুন।*";
         
-        // অ্যাডমিনকে রিয়েল এরর দেখানো হবে (যাতে আপনি ফিক্স করতে পারেন)
         if (chatId === ADMIN_ID) {
             if (error.message.startsWith('NO_API_KEY')) {
                 errTxt = `🚫 *API Key Missing:* ${panelName.toUpperCase()} এর API Key সেট করা নেই!`;
             } else if (error.response) {
                 errTxt = `⚠️ *Admin API Error (${error.response.status}):*\n\`${JSON.stringify(error.response.data)}\`\n\n📌 *API Key অথবা Range ID চেক করুন।*`;
             } else {
-                errTxt = `⚠️ *Admin Network Error:* \`${error.message}\``;
+                errTxt = `⚠️ *Admin Network Error:* \`${error.message}\`\n(This means the panel's server blocked the bot's connection. User-Agent has been added to bypass this.)`;
             }
         }
 
@@ -394,12 +400,13 @@ async function generateNewNumber(chatId, plat, country, msgIdToEdit = null) {
 }
 
 // ==========================================
-// 🔄 SUPER FAST BACKGROUND TASKS (POLLING)
+// 🔄 BACKGROUND TASKS (POLLING)
 // ==========================================
 
-// 1. Check for Auto OTPs from BOTH panels (4s interval)
+let isPollingOTP = false;
 setInterval(async () => {
-    if (activeNumbers.size === 0) return;
+    if (activeNumbers.size === 0 || isPollingOTP) return;
+    isPollingOTP = true;
     
     for (const pName of ['stexsms', 'voltxsms']) {
         if (!panelKeys[pName]) continue;
@@ -465,10 +472,14 @@ setInterval(async () => {
             }
         } catch(e) { }
     }
-}, 4000);
+    isPollingOTP = false;
+}, 5000);
 
-// 2. Global Live Console Feed from BOTH panels (5s interval)
+let isPollingFeed = false;
 setInterval(async () => {
+    if (isPollingFeed) return;
+    isPollingFeed = true;
+
     for (const pName of ['stexsms', 'voltxsms']) {
         if (!panelKeys[pName]) continue;
         
@@ -477,22 +488,19 @@ setInterval(async () => {
             if (res.data && res.data.meta && res.data.meta.status === 'ok') {
                 const hits = res.data.data.hits || [];
                 
-                // Reverse so oldest processes first
                 for(let hit of hits.reverse()) {
                     const uniqueId = `${pName}_${hit.time}_${hit.range}_${hit.message.substring(0,5)}`;
                     
                     if(!seenConsoleHits.has(uniqueId)) {
                         seenConsoleHits.add(uniqueId);
                         
-                        if(seenConsoleHits.size > 1500) { 
+                        if(seenConsoleHits.size > 1000) { 
                             const firstItem = seenConsoleHits.values().next().value;
                             seenConsoleHits.delete(firstItem);
                         }
                         
                         const otpCode = extractOTP(hit.message);
-                        
                         const msg = `🌐 *GLOBAL LIVE OTP* 🌐\n\n📱 *Platform:* ${hit.sid || 'Unknown'}\n🎯 *Range:* \`${hit.range}\`\n🔌 *Source:* ${pName.toUpperCase()}\n\n💬 *SMS:* \`${hit.message}\`\n\n💡 _Get your number from the bot!_`;
-                        
                         const markup = { 
                             inline_keyboard: [
                                 [{ text: `  ${otpCode}`, copy_text: { text: otpCode }, style: "success" }],
@@ -506,7 +514,8 @@ setInterval(async () => {
             }
         } catch(e) {}
     }
-}, 5000);
+    isPollingFeed = false;
+}, 8000);
 
 
 // --- Commands & Messages ---
@@ -526,7 +535,6 @@ bot.on('message', async (msg) => {
     const u = await ensureUser(msg.from);
     if (u && u.banned) return bot.sendMessage(chatId, "🚫 *You are banned.*", { parse_mode: 'Markdown' });
 
-    // Menu Buttons Clear Active States
     const menuButtons = ["📱 GET NUMBER", "📡 LIVE RANGE", "📊 TRAFFIC", "🔐 2FA AUTHENTICATOR", "👤 ACCOUNT", "🎧 SUPPORT", "🛠️ ADMIN PANEL"];
     if (menuButtons.some(btn => text.includes(btn))) {
         if(adminState[chatId]) delete adminState[chatId];
@@ -600,7 +608,7 @@ bot.on('message', async (msg) => {
                     [{ text: "⚙️ Stexsms", callback_data: "setpan_stexsms" }, { text: "⚙️ Voltxsms", callback_data: "setpan_voltxsms" }]
                 ]}
             });
-            return; // Buttons will trigger the next step
+            return; 
         }
         else if (state.action === 'wait_range_val') {
             const ranges = await loadRanges();
@@ -1031,4 +1039,4 @@ Promise.all([loadPanelKeys()]).then(() => {
     console.log("🔑 API settings loaded from DB.");
 });
 
-console.log("🚀 V12.5 System Booted Successfully!");
+console.log("🚀 V13.0 Anti-Block & Fast Polling System Booted Successfully!");
