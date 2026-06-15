@@ -15,7 +15,7 @@ const PORT = process.env.PORT || 3000;
 const SERVER_URL = process.env.SERVER_URL; 
 
 app.use(express.json());
-app.get('/', (req, res) => res.send('Premium Fire OTP Bot v24.0 (Broadcast Fix & Change Number) is Running!'));
+app.get('/', (req, res) => res.send('Premium Fire OTP Bot v25.0 (Dynamic Range Cache & Start Fix) is Running!'));
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 
 // --- MongoDB Setup ---
@@ -346,7 +346,7 @@ async function checkForceSub(chatId) {
     return true;
 }
 
-// 🟢 Fast Number Generation
+// 🟢 Fast Number Generation (Range Caching Enabled)
 async function generateNewNumber(chatId, plat, country, panelNameInput = null, rangeValInput = null, msgIdToEdit = null) {
     const config = await getAppConfig();
     const ranges = await loadRanges(); 
@@ -366,13 +366,13 @@ async function generateNewNumber(chatId, plat, country, panelNameInput = null, r
     }
 
     if (panelName === 'stexsms' && !config.stexsms_on) {
-        const errTxt = "❌ *সার্ভার আপডেট চলছে।*"; // User clean msg
+        const errTxt = "❌ *সার্ভার আপডেট চলছে।*"; 
         if (msgIdToEdit) bot.editMessageText(errTxt, {chat_id: chatId, message_id: msgIdToEdit, parse_mode: 'Markdown'}).catch(()=>{});
         else bot.sendMessage(chatId, errTxt, {parse_mode: 'Markdown'});
         return;
     }
     if (panelName === 'voltxsms' && !config.voltxsms_on) {
-        const errTxt = "❌ *সার্ভার আপডেট চলছে।*"; // User clean msg
+        const errTxt = "❌ *সার্ভার আপডেট চলছে।*"; 
         if (msgIdToEdit) bot.editMessageText(errTxt, {chat_id: chatId, message_id: msgIdToEdit, parse_mode: 'Markdown'}).catch(()=>{});
         else bot.sendMessage(chatId, errTxt, {parse_mode: 'Markdown'});
         return;
@@ -394,9 +394,9 @@ async function generateNewNumber(chatId, plat, country, panelNameInput = null, r
             const boxNumber = `╔════════════════════╗\n║ 📱 \`Wait for auto OTP...\`\n╚════════════════════╝`;
             const platDisplay = `${getPlatIcon(plat)} ${plat.charAt(0).toUpperCase() + plat.slice(1)}`;
             
-            // 🟢 UI Clean: No Panel Source for users
             const text = `📱 *Platform:* ${platDisplay}\n🌍 *Country:* ${country}\n\n${boxNumber}`;
             
+            // 🟢 Change Number Instead of Cancel
             const actionMarkup = { 
                 inline_keyboard: [
                     [{ text: `📱 ${fullPhone}`, copy_text: { text: fullPhone }, style: "primary" }],
@@ -411,11 +411,13 @@ async function generateNewNumber(chatId, plat, country, panelNameInput = null, r
                 sentMsg = await bot.sendMessage(chatId, text, { parse_mode: 'Markdown', reply_markup: actionMarkup });
             }
 
+            // 🟢 Saving Range specifically for future requests (Change/New)
             activeNumbers.set(strippedPhone, {
                 chatId: chatId,
                 plat: plat,
                 country: country,
                 panel: panelName,
+                range: cleanRange,
                 createdAt: Date.now(),
                 msgId: sentMsg.message_id
             });
@@ -478,7 +480,8 @@ setInterval(async () => {
                         const session = activeNumbers.get(number);
                         deliveredOtps.add(otpId);
                         
-                        userLastSession.set(session.chatId, { plat: session.plat, country: session.country, panel: session.panel });
+                        // 🟢 Persist ALL data for 'Get New Number' functionality
+                        userLastSession.set(session.chatId, { plat: session.plat, country: session.country, panel: session.panel, range: session.range });
 
                         const otpCode = extractOTP(otpData.message);
                         const detectedLang = detectLang(otpData.message);
@@ -510,6 +513,7 @@ setInterval(async () => {
                         updateGlobalStats('success');
                         updateTraffic(session.plat, session.country);
                         
+                        // Keep the number, remove 'Change' button
                         const safePhoneText = `📱 +${number}`;
                         bot.editMessageReplyMarkup({ 
                             inline_keyboard: [[{ text: safePhoneText, copy_text: { text: `+${number}` }, style: "primary" }]] 
@@ -520,7 +524,7 @@ setInterval(async () => {
                         const boxNumber = `╔════════════════════╗\n║ 📱 \`${formatPhone}\` ║ LN- ${detectedLang}\n╚════════════════════╝`;
                         
                         const safeSid = (session.plat || 'App').replace(/[^a-zA-Z0-9]/g, '');
-                        const deepLinkUrl = `https://t.me/${botUsername}?start=gn_${pName}_${number}_${safeSid}`;
+                        const deepLinkUrl = `https://t.me/${botUsername}?start=gn_${pName}_${session.range}_${safeSid}`;
 
                         const otpMarkup = { 
                             inline_keyboard: [
@@ -535,7 +539,7 @@ setInterval(async () => {
                         bot.sendMessage(session.chatId, `🎉 *New OTP Received* 🎉\n\n📱 *Platform:* ${platDisplay}\n🌍 *Country:* ${session.country}\n\n${boxNumber}${earningText}`, { parse_mode: 'Markdown', reply_markup: otpMarkup }).catch(()=>{});
                         
                         if (!config.global_feed_on) {
-                            const groupMsg = `🎉 *New OTP Received* 🎉\n\n📱 *Platform:* ${session.plat}\n🌍 *Country:* ${session.country}\n🎯 *Number:* \`${number}\`\n\n💬 *SMS:* \`${otpData.message}\``;
+                            const groupMsg = `🎉 *New OTP Received* 🎉\n\n📱 *Platform:* ${session.plat}\n🌍 *Country:* ${session.country}\n🎯 *Number:* \`${session.range}\`\n\n💬 *SMS:* \`${otpData.message}\``;
                             const groupMarkup = { 
                                 inline_keyboard: [
                                     [{ text: `  ${otpCode}`, copy_text: { text: otpCode }, style: "success" }],
@@ -552,7 +556,7 @@ setInterval(async () => {
         } catch(e) { }
     }
     isPollingOTP = false;
-}, 1000); 
+}, 1000); // 🟢 1 SECOND POLLING
 
 let isPollingFeed = false;
 setInterval(async () => {
@@ -632,9 +636,10 @@ setInterval(async () => {
 
 
 // --- Commands & Messages ---
-bot.onText(/\/start(.*)/, async (msg, match) => {
+// 🟢 FIX: Flawless Start Command Regex to avoid empty execution
+bot.onText(/^\/start(?:\s+(.+))?$/, async (msg, match) => {
     const chatId = msg.chat.id;
-    const param = match[1].trim();
+    const param = match[1] ? match[1].trim() : '';
     
     const u = await ensureUser(msg.from);
     if (u && u.banned) return bot.sendMessage(chatId, "🚫 *You are banned from using this bot.*", { parse_mode: 'Markdown' });
@@ -766,7 +771,6 @@ bot.on('message', async (msg) => {
             await saveRanges(ranges);
             bot.sendMessage(chatId, `✅ *${state.platform}* এর জন্য রেঞ্জ সেভ হয়েছে! (Panel: ${state.panel})`, { parse_mode: 'Markdown' });
             
-            // 🟢 FIX: Broadcast to Users (Range hidden, only platform/country shown)
             const platDisplay = `${getPlatIcon(state.platform)} ${state.platform.charAt(0).toUpperCase() + state.platform.slice(1)}`;
             const broadcastMsg = `📢 *NEW NUMBER ADDED!* 🔥\n\n📱 *Platform:* ${platDisplay}\n🌍 *Country:* ${state.country}\n\n🚀 _এখনই /start দিয়ে Number নিয়ে কাজ শুরু করুন!_`;
             try {
@@ -782,7 +786,6 @@ bot.on('message', async (msg) => {
             await saveRanges(ranges);
             bot.sendMessage(chatId, `✅ Range updated successfully! (Panel: ${state.panel})`);
             
-            // 🟢 FIX: Broadcast to Users
             const platDisplay = `${getPlatIcon(state.platform)} ${state.platform.charAt(0).toUpperCase() + state.platform.slice(1)}`;
             const broadcastMsg = `📢 *NEW NUMBER UPDATED!* 🔥\n\n📱 *Platform:* ${platDisplay}\n🌍 *Country:* ${state.country}\n\n🚀 _এখনই /start দিয়ে Number নিয়ে কাজ শুরু করুন!_`;
             try {
@@ -1223,29 +1226,28 @@ bot.on('callback_query', async (query) => {
             await generateNewNumber(chatId, plat, country, null, null, null);
         }
         
-        // 🟢 NEW: Change Number directly fetches a new one from the same range
+        // 🟢 FIX: 100% Dynamic Memory Range Caching for Change Number
         else if (data.startsWith('change_')) {
             const num = data.split('_')[1];
             const session = activeNumbers.get(num);
             
             if (session && session.chatId === chatId) {
-                const plat = session.plat;
-                const country = session.country;
-                const panel = session.panel;
-                
+                const { plat, country, panel, range } = session;
                 activeNumbers.delete(num);
                 bot.editMessageText("❌ *Number Cancelled. Generating New...*", { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown' }).catch(()=>{});
                 
-                await generateNewNumber(chatId, plat, country, panel, null, msgId);
+                await generateNewNumber(chatId, plat, country, panel, range, msgId);
             } else { 
                 bot.editMessageText("❌ *Session Expired or Already Processed.*", { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown' }).catch(()=>{}); 
             }
         }
+        
+        // 🟢 FIX: Dynamic Range Caching for Get New Number
         else if (data === "get_new_num") {
             const lastSession = userLastSession.get(chatId);
             if (lastSession) {
                 bot.sendMessage(chatId, "🚀 *Generating requested number...*", {parse_mode: 'Markdown'}).then(sentMsg => {
-                    generateNewNumber(chatId, lastSession.plat, lastSession.country, lastSession.panel, null, sentMsg.message_id);
+                    generateNewNumber(chatId, lastSession.plat, lastSession.country, lastSession.panel, lastSession.range, sentMsg.message_id);
                 });
             } else {
                 bot.sendMessage(chatId, "📌 *Session expired. Go to GET NUMBER from menu to start again.*", { parse_mode: 'Markdown' });
@@ -1260,4 +1262,4 @@ Promise.all([loadPanelKeys()]).then(() => {
     console.log("🔑 DB Settings Loaded. Default APIs injected.");
 });
 
-console.log("🚀 V24.0 Broadcast & Change Num Fixed Successfully!");
+console.log("🚀 V25.0 Full Memory Caching Booted Successfully!");
