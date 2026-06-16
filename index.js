@@ -15,7 +15,7 @@ const PORT = process.env.PORT || 3000;
 const SERVER_URL = process.env.SERVER_URL; 
 
 app.use(express.json());
-app.get('/', (req, res) => res.send('Premium Fire OTP Bot v25.0 (Dynamic Range Cache & Start Fix) is Running!'));
+app.get('/', (req, res) => res.send('Premium Fire OTP Bot v26.0 (Professional UI & Withdraw Checked) is Running!'));
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 
 // --- MongoDB Setup ---
@@ -346,7 +346,7 @@ async function checkForceSub(chatId) {
     return true;
 }
 
-// 🟢 Fast Number Generation (Range Caching Enabled)
+// 🟢 Fast Number Generation
 async function generateNewNumber(chatId, plat, country, panelNameInput = null, rangeValInput = null, msgIdToEdit = null) {
     const config = await getAppConfig();
     const ranges = await loadRanges(); 
@@ -396,7 +396,6 @@ async function generateNewNumber(chatId, plat, country, panelNameInput = null, r
             
             const text = `📱 *Platform:* ${platDisplay}\n🌍 *Country:* ${country}\n\n${boxNumber}`;
             
-            // 🟢 Change Number Instead of Cancel
             const actionMarkup = { 
                 inline_keyboard: [
                     [{ text: `📱 ${fullPhone}`, copy_text: { text: fullPhone }, style: "primary" }],
@@ -411,7 +410,6 @@ async function generateNewNumber(chatId, plat, country, panelNameInput = null, r
                 sentMsg = await bot.sendMessage(chatId, text, { parse_mode: 'Markdown', reply_markup: actionMarkup });
             }
 
-            // 🟢 Saving Range specifically for future requests (Change/New)
             activeNumbers.set(strippedPhone, {
                 chatId: chatId,
                 plat: plat,
@@ -426,9 +424,9 @@ async function generateNewNumber(chatId, plat, country, panelNameInput = null, r
             updateGlobalStats('pending');
             
         } else {
-            let outTxt = "❌ *নাম্বার স্টকে নেই বা রেঞ্জ ভুল দেওয়া হয়েছে!*";
-            if (chatId === ADMIN_ID) outTxt = `⚠️ *Admin Debug:* Number Not Allocated.\nAPI Response: \`${JSON.stringify(res.data)}\``;
-
+            // 🟢 FIX: Professional clean output for everyone
+            const outTxt = "❌ *Number Not Found!*\n\n_দুঃখিত, এই মুহূর্তে এই রেঞ্জে কোনো নাম্বার স্টকে নেই। দয়া করে অন্য রেঞ্জ ট্রাই করুন অথবা কিছুক্ষণ পর আবার চেষ্টা করুন।_";
+            
             if (msgIdToEdit) bot.editMessageText(outTxt, { chat_id: chatId, message_id: msgIdToEdit, parse_mode: 'Markdown' }).catch(()=>{});
             else bot.sendMessage(chatId, outTxt, { parse_mode: 'Markdown' });
         }
@@ -438,10 +436,6 @@ async function generateNewNumber(chatId, plat, country, panelNameInput = null, r
         if (chatId === ADMIN_ID) {
             if (error.message && error.message.startsWith('NO_API_KEY')) {
                 errTxt = `🚫 *API Key Missing:* ${panelName.toUpperCase()} এর API Key সেট করা নেই!`;
-            } else if (error.response) {
-                errTxt = `⚠️ *Admin API Error (${error.response.status}):*\n\`${JSON.stringify(error.response.data)}\`\n\n📌 *API Key অথবা Range ID চেক করুন।*`;
-            } else {
-                errTxt = `⚠️ *Admin Network Error:* \`${error.message}\``;
             }
         }
 
@@ -480,7 +474,6 @@ setInterval(async () => {
                         const session = activeNumbers.get(number);
                         deliveredOtps.add(otpId);
                         
-                        // 🟢 Persist ALL data for 'Get New Number' functionality
                         userLastSession.set(session.chatId, { plat: session.plat, country: session.country, panel: session.panel, range: session.range });
 
                         const otpCode = extractOTP(otpData.message);
@@ -513,7 +506,6 @@ setInterval(async () => {
                         updateGlobalStats('success');
                         updateTraffic(session.plat, session.country);
                         
-                        // Keep the number, remove 'Change' button
                         const safePhoneText = `📱 +${number}`;
                         bot.editMessageReplyMarkup({ 
                             inline_keyboard: [[{ text: safePhoneText, copy_text: { text: `+${number}` }, style: "primary" }]] 
@@ -636,7 +628,6 @@ setInterval(async () => {
 
 
 // --- Commands & Messages ---
-// 🟢 FIX: Flawless Start Command Regex to avoid empty execution
 bot.onText(/^\/start(?:\s+(.+))?$/, async (msg, match) => {
     const chatId = msg.chat.id;
     const param = match[1] ? match[1].trim() : '';
@@ -1184,6 +1175,26 @@ bot.on('callback_query', async (query) => {
             userState[chatId] = { action: 'wait_wd_id', method: method };
             bot.sendMessage(chatId, `✏️ *আপনার ${method} Account ID / Number দিন:*`, { parse_mode: 'Markdown' });
         }
+        else if (data.startsWith('wd_appr_') || data.startsWith('wd_canc_')) {
+            if (query.from.id !== ADMIN_ID) return;
+            const isApprove = data.startsWith('wd_appr_');
+            const wd_id = data.split('_')[2];
+            try {
+                const reqDoc = await Withdraw.findOne({ wd_id: wd_id });
+                if (!reqDoc || reqDoc.status !== 'pending') return;
+                if (isApprove) {
+                    reqDoc.status = 'approved'; await reqDoc.save();
+                    bot.editMessageText(query.message.text + "\n\n✅ *STATUS: APPROVED*", { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown' }).catch(()=>{});
+                    bot.sendMessage(reqDoc.user_id, `🎉 *Withdrawal Approved!*\n\n💰 Amount: \`${reqDoc.amount}\` ৳\n💳 Method: ${reqDoc.method}`, { parse_mode: 'Markdown' }).catch(()=>{});
+                } else {
+                    reqDoc.status = 'rejected'; await reqDoc.save();
+                    const uDoc = await User.findOne({ id: reqDoc.user_id });
+                    if (uDoc) { uDoc.balance = parseFloat((uDoc.balance + reqDoc.amount).toFixed(2)); await uDoc.save(); }
+                    bot.editMessageText(query.message.text + "\n\n❌ *STATUS: REJECTED*", { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown' }).catch(()=>{});
+                    bot.sendMessage(reqDoc.user_id, `❌ *Withdrawal Rejected!* Amount refunded.`, { parse_mode: 'Markdown' }).catch(()=>{});
+                }
+            } catch (e) {}
+        }
 
         // --- User 2FA Controls ---
         else if (data === "add_2fa") {
@@ -1225,8 +1236,6 @@ bot.on('callback_query', async (query) => {
             bot.deleteMessage(chatId, msgId).catch(()=>{});
             await generateNewNumber(chatId, plat, country, null, null, null);
         }
-        
-        // 🟢 FIX: 100% Dynamic Memory Range Caching for Change Number
         else if (data.startsWith('change_')) {
             const num = data.split('_')[1];
             const session = activeNumbers.get(num);
@@ -1241,8 +1250,6 @@ bot.on('callback_query', async (query) => {
                 bot.editMessageText("❌ *Session Expired or Already Processed.*", { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown' }).catch(()=>{}); 
             }
         }
-        
-        // 🟢 FIX: Dynamic Range Caching for Get New Number
         else if (data === "get_new_num") {
             const lastSession = userLastSession.get(chatId);
             if (lastSession) {
@@ -1259,7 +1266,7 @@ bot.on('callback_query', async (query) => {
 });
 
 Promise.all([loadPanelKeys()]).then(() => {
-    console.log("🔑 DB Settings Loaded. Default APIs injected.");
+    console.log("🔑 DB Settings Loaded.");
 });
 
-console.log("🚀 V25.0 Full Memory Caching Booted Successfully!");
+console.log("🚀 V26.0 Booted Successfully!");
