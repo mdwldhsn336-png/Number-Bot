@@ -15,7 +15,7 @@ const PORT = process.env.PORT || 3000;
 const SERVER_URL = process.env.SERVER_URL; 
 
 app.use(express.json());
-app.get('/', (req, res) => res.send('Premium Fire OTP Bot v27.0 (Referral & Top Users Bonus) is Running!'));
+app.get('/', (req, res) => res.send('Premium Fire OTP Bot v28.0 (Leaderboard Fix & Midnight Reset) is Running!'));
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 
 // --- MongoDB Setup ---
@@ -153,12 +153,11 @@ const deliveredOtps = new Set();
 const seenConsoleHits = new Set();
 const userLastSession = new Map(); 
 
-// 🟢 Business Date Logic (Day resets at 6:00 AM BD Time)
-function getBusinessDate() {
+// 🟢 BD Time Date String
+function getLocDate() {
     const now = new Date();
     const bdTimeMs = now.getTime() + (now.getTimezoneOffset() * 60000) + (6 * 3600000);
-    const businessTime = new Date(bdTimeMs - (6 * 3600000));
-    return businessTime.toISOString().split('T')[0];
+    return new Date(bdTimeMs).toISOString().split('T')[0];
 }
 
 setInterval(() => {
@@ -183,7 +182,7 @@ async function getAppConfig() {
         if (config.voltxsms_on === undefined) config.voltxsms_on = true;   
         if (config.force_start === undefined) config.force_start = false;  
         if (config.global_feed_on === undefined) config.global_feed_on = true; 
-        if (config.ref_otp_commission === undefined) config.ref_otp_commission = 0.5; // Default 0.5 tk per OTP 
+        if (config.ref_otp_commission === undefined) config.ref_otp_commission = 0.5; 
         if (config.bonus_top1 === undefined) config.bonus_top1 = 50;
         if (config.bonus_top2 === undefined) config.bonus_top2 = 30;
         if (config.bonus_top3 === undefined) config.bonus_top3 = 20;
@@ -197,7 +196,7 @@ async function saveAppConfig(data) { await Setting.findOneAndUpdate({ key: 'app_
 async function ensureUser(user) {
     if (!user || !user.id) return null;
     try {
-        const today = getBusinessDate();
+        const today = getLocDate();
         let u = await User.findOne({ id: String(user.id) });
         if (!u) {
             u = new User({ id: String(user.id), first_name: user.first_name || 'User', username: user.username || 'N/A', joined: new Date().toISOString(), last_active_date: today });
@@ -236,9 +235,7 @@ async function updateTraffic(plat, country) {
         await Setting.findOneAndUpdate({ key: 'traffic' }, { $inc: { [updateStr]: 1 } }, { upsert: true });
     } catch(e){}
 }
-async function getTraffic() {
-    try { const doc = await Setting.findOne({ key: 'traffic' }); return doc && doc.data ? doc.data : {}; } catch(e){ return {}; }
-}
+
 async function get2FA(chatId) {
     try { const u = await User.findOne({ id: String(chatId) }); return u && u.two_fa ? u.two_fa : []; } catch(e){ return []; }
 }
@@ -277,7 +274,7 @@ function getCountryByCode(range) {
 function getMainMenu(chatId) {
     let kb = [
         [{ text: "📱 GET NUMBER", style: "success" }],
-        [{ text: "📡 LIVE RANGE", style: "primary" }, { text: "📊 TRAFFIC", style: "primary" }],
+        [{ text: "📡 LIVE RANGE", style: "primary" }], // 🟢 Removed Traffic Button
         [{ text: "🏆 Top Users", style: "primary" }, { text: "🎁 Referrals", style: "primary" }],
         [{ text: "🔐 2FA AUTHENTICATOR", style: "danger" }, { text: "👤 ACCOUNT", style: "primary" }],
         [{ text: "🎧 SUPPORT", style: "primary" }]
@@ -434,12 +431,12 @@ async function generateNewNumber(chatId, plat, country, panelNameInput = null, r
             updateGlobalStats('pending');
             
         } else {
-            let outTxt = "❌ *Number Not Found!*\n\n_দুঃখিত, এই মুহূর্তে এই রেঞ্জে কোনো নাম্বার স্টকে নেই। দয়া করে অন্য রেঞ্জ ট্রাই করুন অথবা কিছুক্ষণ পর আবার চেষ্টা করুন।_";
+            const outTxt = "❌ *Number Not Found!*\n\n_দুঃখিত, এই মুহূর্তে এই রেঞ্জে কোনো নাম্বার স্টকে নেই। দয়া করে অন্য রেঞ্জ ট্রাই করুন অথবা কিছুক্ষণ পর আবার চেষ্টা করুন।_";
             if (msgIdToEdit) bot.editMessageText(outTxt, { chat_id: chatId, message_id: msgIdToEdit, parse_mode: 'Markdown' }).catch(()=>{});
             else bot.sendMessage(chatId, outTxt, { parse_mode: 'Markdown' });
         }
     } catch (error) { 
-        let errTxt = "⚠️ *সার্ভার সাময়িক ব্যস্ত আছে। একটু পর আবার চেষ্টা করুন।*";
+        const errTxt = "⚠️ *সার্ভার সাময়িক ব্যস্ত আছে। একটু পর আবার চেষ্টা করুন।*";
         if (msgIdToEdit) bot.editMessageText(errTxt, { chat_id: chatId, message_id: msgIdToEdit, parse_mode: 'Markdown' }).catch(()=>{}); 
         else bot.sendMessage(chatId, errTxt, { parse_mode: 'Markdown' });
     }
@@ -454,6 +451,7 @@ setInterval(async () => {
     if (activeNumbers.size === 0 || isPollingOTP) return;
     isPollingOTP = true;
     const config = await getAppConfig();
+    const todayStr = getLocDate();
     
     for (const pName of ['stexsms', 'voltxsms']) {
         if (pName === 'stexsms' && !config.stexsms_on) continue;
@@ -484,16 +482,22 @@ setInterval(async () => {
 
                         if (config.reward_system !== false) {
                             let earnedAmount = config.per_otp_rate || 0;
-                            await Earning.create({ num_id: otpId, user_id: String(session.chatId), date: getBusinessDate() });
+                            await Earning.create({ num_id: otpId, user_id: String(session.chatId), date: todayStr });
                             
                             const uDoc = await User.findOne({ id: String(session.chatId) });
                             if(uDoc) {
+                                // Double Check Reset Logic for accurate Top Users List
+                                if(uDoc.last_active_date !== todayStr) {
+                                    uDoc.today_otps = 0;
+                                    uDoc.today_balance = 0;
+                                    uDoc.last_active_date = todayStr;
+                                }
+
                                 uDoc.balance = parseFloat((uDoc.balance + earnedAmount).toFixed(2));
                                 uDoc.today_balance = parseFloat((uDoc.today_balance + earnedAmount).toFixed(2));
                                 uDoc.total_otps += 1;
                                 uDoc.today_otps += 1;
                                 
-                                // 🟢 Give Referral Commission
                                 const refComm = config.ref_otp_commission || 0.5;
                                 if (uDoc.referred_by && refComm > 0) {
                                     const refUser = await User.findOne({ id: uDoc.referred_by });
@@ -511,6 +515,11 @@ setInterval(async () => {
                         } else {
                             const uDoc = await User.findOne({ id: String(session.chatId) });
                             if(uDoc) {
+                                if(uDoc.last_active_date !== todayStr) {
+                                    uDoc.today_otps = 0;
+                                    uDoc.today_balance = 0;
+                                    uDoc.last_active_date = todayStr;
+                                }
                                 uDoc.total_otps += 1;
                                 uDoc.today_otps += 1;
                                 await uDoc.save();
@@ -640,20 +649,20 @@ setInterval(async () => {
     isPollingFeed = false;
 }, 6000);
 
-// 🟢 NEW: 6 AM Daily Reset for Top 3 Bonus
+// 🟢 12:00 AM (Midnight) Reset for Top 3 Bonus
 setInterval(async () => {
     const now = new Date();
     const bdTimeMs = now.getTime() + (now.getTimezoneOffset() * 60000) + (6 * 3600000);
     const bdTime = new Date(bdTimeMs);
     
-    // Check if it's exactly 6 AM (allow a small window within the minute)
-    if (bdTime.getHours() === 6 && bdTime.getMinutes() === 0) {
+    // Check if it's exactly 12:00 AM Midnight
+    if (bdTime.getHours() === 0 && bdTime.getMinutes() === 0) {
         if (!global.dailyResetDone || global.dailyResetDone !== bdTime.getDate()) {
             global.dailyResetDone = bdTime.getDate();
             
             try {
                 const config = await getAppConfig();
-                // 🟢 Top 3 Condition: >= 50 OTPs today AND >= 3 Referrals total
+                // Top 3 Condition: >= 50 OTPs today AND >= 3 Referrals total
                 const topUsers = await User.find({ today_otps: { $gte: 50 }, referral_count: { $gte: 3 } }).sort({ today_otps: -1 }).limit(3);
                 
                 let broadcastTxt = "🏆 *TODAY'S TOP WINNERS* 🏆\n\n";
@@ -668,9 +677,7 @@ setInterval(async () => {
                     u.balance += bonus;
                     await u.save();
                     
-                    let maskedId = String(u.id).substring(0, 4) + "****";
-                    broadcastTxt += `${medals[i]} *Top ${i+1}:* ${u.first_name} (ID: \`${maskedId}\`)\n🎁 *Bonus:* \`${bonus}\` ৳ | *OTPs:* ${u.today_otps}\n\n`;
-                    
+                    broadcastTxt += `${medals[i]} *Top ${i+1}:* ${u.first_name} (ID: \`${u.id}\`)\n🎁 *Bonus:* \`${bonus}\` ৳ | *OTPs:* ${u.today_otps}\n\n`;
                     bot.sendMessage(u.id, `🎉 *CONGRATULATIONS!* 🎉\n\nআপনি আজকের Top ${i+1} ইউজার হয়েছেন!\n🎁 *Bonus:* \`${bonus}\` ৳ আপনার একাউন্টে যোগ করা হয়েছে!`, { parse_mode: 'Markdown' }).catch(()=>{});
                 }
                 
@@ -679,7 +686,7 @@ setInterval(async () => {
                 }
                 
                 // Reset daily stats for everyone
-                await User.updateMany({}, { $set: { today_otps: 0, today_balance: 0, last_active_date: getBusinessDate() } });
+                await User.updateMany({}, { $set: { today_otps: 0, today_balance: 0, last_active_date: getLocDate() } });
             } catch (e) { console.log("Reset Error:", e); }
         }
     }
@@ -720,7 +727,7 @@ bot.onText(/^\/start(?:\s+(.+))?$/, async (msg, match) => {
         }
     }
 
-    // 🟢 Normal Start & Referral Setup
+    // Normal Start & Referral Setup
     let u = await User.findOne({ id: String(chatId) });
     if (!u) {
         u = new User({ 
@@ -728,10 +735,9 @@ bot.onText(/^\/start(?:\s+(.+))?$/, async (msg, match) => {
             first_name: msg.from.first_name || 'User', 
             username: msg.from.username || 'N/A', 
             joined: new Date().toISOString(), 
-            last_active_date: getBusinessDate() 
+            last_active_date: getLocDate() 
         });
         
-        // Setup Referral if param exists and isn't user's own ID
         if (param && param !== String(chatId) && !param.startsWith('gn_')) {
             const referrer = await User.findOne({ id: param });
             if (referrer) {
@@ -743,7 +749,7 @@ bot.onText(/^\/start(?:\s+(.+))?$/, async (msg, match) => {
         }
         await u.save();
     } else {
-        const today = getBusinessDate();
+        const today = getLocDate();
         if (u.last_active_date !== today) { 
             u.today_otps = 0; 
             u.today_balance = 0; 
@@ -774,7 +780,7 @@ bot.on('message', async (msg) => {
     const u = await ensureUser(msg.from);
     if (u && u.banned) return bot.sendMessage(chatId, "🚫 *You are banned.*", { parse_mode: 'Markdown' });
 
-    const menuButtons = ["📱 GET NUMBER", "📡 LIVE RANGE", "📊 TRAFFIC", "🔐 2FA AUTHENTICATOR", "👤 ACCOUNT", "🎧 SUPPORT", "🛠️ ADMIN PANEL", "🏆 Top Users", "🎁 Referrals"];
+    const menuButtons = ["📱 GET NUMBER", "📡 LIVE RANGE", "🏆 Top Users", "🎁 Referrals", "🔐 2FA AUTHENTICATOR", "👤 ACCOUNT", "🎧 SUPPORT", "🛠️ ADMIN PANEL"];
     if (menuButtons.some(btn => text.includes(btn))) {
         if(adminState[chatId]) delete adminState[chatId];
         if(userState[chatId]) delete userState[chatId];
@@ -895,7 +901,6 @@ bot.on('message', async (msg) => {
             } catch (e) {} delete adminState[chatId]; return;
         }
         
-        // 🟢 Reward/Bonus Editor States
         else if (state.action === 'wait_otp_rate') {
             const val = parseFloat(text.trim());
             if(!isNaN(val) && val >= 0) {
@@ -992,15 +997,7 @@ bot.on('message', async (msg) => {
                 reply_markup: { inline_keyboard: [[{ text: "🔥 Go To Live OTP Group", url: `https://t.me/${OTP_GROUP_ID.replace('@', '')}` }]] } 
             });
         }
-        else if (text === "📊 TRAFFIC") {
-            const traffic = await getTraffic();
-            if (Object.keys(traffic).length === 0) return bot.sendMessage(chatId, "⚠️ *এখনও কোনো ট্রাফিক ডাটা নেই।*", { parse_mode: 'Markdown' });
-            let sorted = Object.entries(traffic).sort((a, b) => b[1] - a[1]);
-            let msgText = "📊 *BOT OTP TRAFFIC*\n\n";
-            sorted.forEach(([key, count], index) => { msgText += `*${index + 1}.* ${key} ➔ \`${count} OTPs\`\n`; });
-            bot.sendMessage(chatId, msgText, { parse_mode: 'Markdown' });
-        }
-        // 🟢 NEW: Top Users System
+        // 🟢 Top Users System Fix
         else if (text === "🏆 Top Users") {
             const topUsers = await User.find({ today_otps: { $gt: 0 } }).sort({ today_otps: -1 }).limit(10);
             
@@ -1010,19 +1007,18 @@ bot.on('message', async (msg) => {
             } else {
                 const medals = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"];
                 topUsers.forEach((u, index) => {
-                    let mId = u.id.substring(0, 4) + "****";
-                    msgText += `${medals[index] || "🏅"} *${u.first_name}* (ID: ${mId})\n🎯 *OTPs:* \`${u.today_otps}\`\n\n`;
+                    let mId = u.id; // Full ID for Admin
+                    msgText += `${medals[index] || "🏅"} *${u.first_name}* (ID: \`${mId}\`)\n🎯 *OTPs:* \`${u.today_otps}\`\n\n`;
                 });
             }
             
-            msgText += "⚠️ _লিস্ট প্রতিদিন সকাল ৬ টায় রিসেট হবে।_\n🎉 _Top 3 জনকে প্রতিদিন বোনাস দেওয়া হবে!_";
+            msgText += "⚠️ _লিস্ট প্রতিদিন রাত ১২ টায় রিসেট হবে।_\n🎉 _Top 3 জনকে প্রতিদিন বোনাস দেওয়া হবে!_";
             
             bot.sendMessage(chatId, msgText, { 
                 parse_mode: 'Markdown',
                 reply_markup: { inline_keyboard: [[{ text: "👁️ See Your Position", callback_data: "my_rank", style: "primary" }]] }
             });
         }
-        // 🟢 NEW: Referral System Info
         else if (text === "🎁 Referrals") {
             const uData = await ensureUser(msg.from);
             const config = await getAppConfig();
@@ -1076,6 +1072,7 @@ bot.on('callback_query', async (query) => {
     const data = query.data;
     const msgId = query.message.message_id;
 
+    // 🟢 Join Check Callback
     if (data === "check_joined") {
         const subbed = await isUserSubscribed(chatId);
         if (subbed) {
@@ -1088,6 +1085,18 @@ bot.on('callback_query', async (query) => {
         }
         bot.answerCallbackQuery(query.id).catch(()=>{});
         return;
+    }
+
+    // 🟢 See Position Callback (Fixed to show alert directly)
+    if (data === "my_rank") {
+        const u = await User.findOne({ id: String(chatId) });
+        if (!u || u.today_otps === 0) {
+            return bot.answerCallbackQuery(query.id, { text: `আপনি আজকে এখনও কোনো OTP পাননি!`, show_alert: true }).catch(()=>{});
+        } else {
+            const higherCount = await User.countDocuments({ today_otps: { $gt: u.today_otps } });
+            const myRank = higherCount + 1;
+            return bot.answerCallbackQuery(query.id, { text: `🏆 Your Position: #${myRank}\n🎯 Today's OTPs: ${u.today_otps}`, show_alert: true }).catch(()=>{});
+        }
     }
 
     bot.answerCallbackQuery(query.id).catch(()=>{});
@@ -1193,7 +1202,6 @@ bot.on('callback_query', async (query) => {
             bot.sendDocument(chatId, buffer, {}, { filename: 'users.txt', contentType: 'text/plain' }).catch(()=>{});
         }
         
-        // 🟢 Advanced Payment & Reward Settings Interface
         else if (data === "adm_paycfg" && chatId === ADMIN_ID) {
             const config = await getAppConfig();
             let msg = `💳 *Payment & Reward Settings*\n\n💰 *Per OTP Earning:* \`${config.per_otp_rate}\` ৳\n📉 *Min Withdraw:* \`${config.min_withdraw}\` ৳\n👥 *Ref Comm/OTP:* \`${config.ref_otp_commission || 0.5}\` ৳\n🏆 *Top Bonus:* 1st:\`${config.bonus_top1 || 50}\` | 2nd:\`${config.bonus_top2 || 30}\` | 3rd:\`${config.bonus_top3 || 20}\`\n💳 *Methods:* ${config.pay_methods.join(', ') || 'None'}`;
@@ -1212,7 +1220,6 @@ bot.on('callback_query', async (query) => {
             const config = await getAppConfig();
             config.reward_system = !config.reward_system;
             await saveAppConfig(config);
-            
             let msg = `💳 *Payment & Reward Settings*\n\n💰 *Per OTP Earning:* \`${config.per_otp_rate}\` ৳\n📉 *Min Withdraw:* \`${config.min_withdraw}\` ৳\n👥 *Ref Comm/OTP:* \`${config.ref_otp_commission || 0.5}\` ৳\n🏆 *Top Bonus:* 1st:\`${config.bonus_top1 || 50}\` | 2nd:\`${config.bonus_top2 || 30}\` | 3rd:\`${config.bonus_top3 || 20}\`\n💳 *Methods:* ${config.pay_methods.join(', ') || 'None'}`;
             let kb = [
                 [{ text: `🎁 Reward System: ${config.reward_system ? "ON 🟢" : "OFF 🔴"}`, callback_data: "adm_tog_reward", style: "primary" }],
@@ -1224,7 +1231,6 @@ bot.on('callback_query', async (query) => {
             ];
             bot.editMessageText(msg, { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown', reply_markup: { inline_keyboard: kb } }).catch(()=>{});
         }
-        
         else if (data === "adm_edit_otprate" && chatId === ADMIN_ID) {
             adminState[chatId] = { action: 'wait_otp_rate' }; bot.sendMessage(chatId, "✏️ *Enter new earning per OTP (৳):*", { parse_mode: 'Markdown' });
         }
@@ -1356,6 +1362,26 @@ bot.on('callback_query', async (query) => {
             userState[chatId] = { action: 'wait_wd_id', method: method };
             bot.sendMessage(chatId, `✏️ *আপনার ${method} Account ID / Number দিন:*`, { parse_mode: 'Markdown' });
         }
+        else if (data.startsWith('wd_appr_') || data.startsWith('wd_canc_')) {
+            if (query.from.id !== ADMIN_ID) return;
+            const isApprove = data.startsWith('wd_appr_');
+            const wd_id = data.split('_')[2];
+            try {
+                const reqDoc = await Withdraw.findOne({ wd_id: wd_id });
+                if (!reqDoc || reqDoc.status !== 'pending') return;
+                if (isApprove) {
+                    reqDoc.status = 'approved'; await reqDoc.save();
+                    bot.editMessageText(query.message.text + "\n\n✅ *STATUS: APPROVED*", { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown' }).catch(()=>{});
+                    bot.sendMessage(reqDoc.user_id, `🎉 *Withdrawal Approved!*\n\n💰 Amount: \`${reqDoc.amount}\` ৳\n💳 Method: ${reqDoc.method}`, { parse_mode: 'Markdown' }).catch(()=>{});
+                } else {
+                    reqDoc.status = 'rejected'; await reqDoc.save();
+                    const uDoc = await User.findOne({ id: reqDoc.user_id });
+                    if (uDoc) { uDoc.balance = parseFloat((uDoc.balance + reqDoc.amount).toFixed(2)); await uDoc.save(); }
+                    bot.editMessageText(query.message.text + "\n\n❌ *STATUS: REJECTED*", { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown' }).catch(()=>{});
+                    bot.sendMessage(reqDoc.user_id, `❌ *Withdrawal Rejected!* Amount refunded.`, { parse_mode: 'Markdown' }).catch(()=>{});
+                }
+            } catch (e) {}
+        }
 
         // --- User 2FA Controls ---
         else if (data === "add_2fa") {
@@ -1377,18 +1403,6 @@ bot.on('callback_query', async (query) => {
             if (saved2fa[index]) {
                 saved2fa.splice(index, 1); await save2FA(chatId, saved2fa);
                 bot.editMessageText("✅ *2FA Secret ডিলিট করা হয়েছে!*", { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown' }).catch(()=>{});
-            }
-        }
-
-        // 🟢 My Rank Logic
-        else if (data === "my_rank") {
-            const u = await User.findOne({ id: String(chatId) });
-            if (!u || u.today_otps === 0) {
-                bot.answerCallbackQuery(query.id, { text: `আপনি আজকে এখনও কোনো OTP পাননি!`, show_alert: true });
-            } else {
-                const higherCount = await User.countDocuments({ today_otps: { $gt: u.today_otps } });
-                const myRank = higherCount + 1;
-                bot.answerCallbackQuery(query.id, { text: `🏆 Your Position: #${myRank}\n🎯 Today's OTPs: ${u.today_otps}`, show_alert: true });
             }
         }
 
@@ -1453,4 +1467,4 @@ Promise.all([loadPanelKeys()]).then(() => {
     console.log("🔑 DB Settings Loaded. Default APIs injected.");
 });
 
-console.log("🚀 V27.0 Referral & Top Users System Booted Successfully!");
+console.log("🚀 V28.0 Midnight Reset Leaderboard Fixed Successfully!");
