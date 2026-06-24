@@ -15,7 +15,7 @@ const PORT = process.env.PORT || 3000;
 const SERVER_URL = process.env.SERVER_URL; 
 
 app.use(express.json());
-app.get('/', (req, res) => res.send('Premium Fire OTP Bot v29.0 (Foolproof Reset & Stats Fix) is Running!'));
+app.get('/', (req, res) => res.send('Premium Fire OTP Bot v30.0 (Advanced Admin Controls) is Running!'));
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 
 // --- MongoDB Setup ---
@@ -73,7 +73,6 @@ const Withdraw = mongoose.model('Withdraw', WithdrawSchema);
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const ADMIN_ID = parseInt(process.env.ADMIN_ID);
 const OTP_GROUP_ID = "@otp_number_grp";
-const PAYMENT_GROUP_ID = "-1003925192534"; 
 const NUMBER_EXPIRY_MS = 15 * 60 * 1000; 
 
 let bot;
@@ -182,13 +181,14 @@ async function getAppConfig() {
         if (config.voltxsms_on === undefined) config.voltxsms_on = true;   
         if (config.force_start === undefined) config.force_start = false;  
         if (config.global_feed_on === undefined) config.global_feed_on = true; 
+        if (config.top_reward_on === undefined) config.top_reward_on = true; // 🟢 Top Reward Toggle
         if (config.ref_otp_commission === undefined) config.ref_otp_commission = 0.5; 
         if (config.bonus_top1 === undefined) config.bonus_top1 = 50;
         if (config.bonus_top2 === undefined) config.bonus_top2 = 30;
         if (config.bonus_top3 === undefined) config.bonus_top3 = 20;
         return config;
     } catch(e) { 
-        return { per_otp_rate: 5, min_withdraw: 50, pay_methods: ['Binance'], reward_system: true, stexsms_on: true, voltxsms_on: true, force_start: false, global_feed_on: true, ref_otp_commission: 0.5, bonus_top1: 50, bonus_top2: 30, bonus_top3: 20 }; 
+        return { per_otp_rate: 5, min_withdraw: 50, pay_methods: ['Binance'], reward_system: true, stexsms_on: true, voltxsms_on: true, force_start: false, global_feed_on: true, top_reward_on: true, ref_otp_commission: 0.5, bonus_top1: 50, bonus_top2: 30, bonus_top3: 20 }; 
     }
 }
 async function saveAppConfig(data) { await Setting.findOneAndUpdate({ key: 'app_config' }, { data }, { upsert: true }); }
@@ -493,7 +493,6 @@ setInterval(async () => {
                             
                             const uDoc = await User.findOne({ id: String(session.chatId) });
                             if(uDoc) {
-                                // Double Check Reset Logic for accurate Top Users List
                                 if(uDoc.last_active_date !== todayStr) {
                                     uDoc.today_otps = 0;
                                     uDoc.today_balance = 0;
@@ -662,38 +661,39 @@ setInterval(async () => {
     const bdTimeMs = now.getTime() + (now.getTimezoneOffset() * 60000) + (6 * 3600000);
     const bdTime = new Date(bdTimeMs);
     
-    // 🟢 Executes if time is between 12:00 AM and 12:05 AM (Safety Net)
     if (bdTime.getHours() === 0 && bdTime.getMinutes() <= 5) {
         const todayStr = bdTime.toISOString().split('T')[0];
         
         try {
             const resetDoc = await Setting.findOne({ key: 'last_bonus_date' });
             if (!resetDoc || resetDoc.data !== todayStr) {
-                // Lock the reset for today
                 await Setting.findOneAndUpdate({ key: 'last_bonus_date' }, { data: todayStr }, { upsert: true });
 
                 const config = await getAppConfig();
-                // 🟢 Top 3 Condition Check (They must have earned the OTPs)
-                const topUsers = await User.find({ today_otps: { $gte: 50 }, referral_count: { $gte: 3 } }).sort({ today_otps: -1 }).limit(3);
                 
-                let broadcastTxt = "🏆 *YESTERDAY'S TOP WINNERS* 🏆\n\n";
-                let hasWinners = false;
-                const bonuses = [config.bonus_top1 || 50, config.bonus_top2 || 30, config.bonus_top3 || 20];
-                const medals = ["🥇", "🥈", "🥉"];
-                
-                for (let i = 0; i < topUsers.length; i++) {
-                    hasWinners = true;
-                    const u = topUsers[i];
-                    const bonus = bonuses[i];
-                    u.balance += bonus;
-                    await u.save();
+                // 🟢 Top Reward Distribution logic
+                if (config.top_reward_on) {
+                    const topUsers = await User.find({ today_otps: { $gte: 50 }, referral_count: { $gte: 3 } }).sort({ today_otps: -1 }).limit(3);
                     
-                    broadcastTxt += `${medals[i]} *Top ${i+1}:* ${u.first_name} (ID: \`${u.id}\`)\n🎁 *Bonus:* \`${bonus}\` ৳ | *OTPs:* ${u.today_otps}\n\n`;
-                    bot.sendMessage(u.id, `🎉 *CONGRATULATIONS!* 🎉\n\nআপনি গতকালের Top ${i+1} ইউজার হয়েছেন!\n🎁 *Bonus:* \`${bonus}\` ৳ আপনার একাউন্টে যোগ করা হয়েছে!`, { parse_mode: 'Markdown' }).catch(()=>{});
-                }
-                
-                if (hasWinners) {
-                    bot.sendMessage("@taskesy_news", broadcastTxt, { parse_mode: 'Markdown' }).catch(()=>{});
+                    let broadcastTxt = "🏆 *YESTERDAY'S TOP WINNERS* 🏆\n\n";
+                    let hasWinners = false;
+                    const bonuses = [config.bonus_top1 || 50, config.bonus_top2 || 30, config.bonus_top3 || 20];
+                    const medals = ["🥇", "🥈", "🥉"];
+                    
+                    for (let i = 0; i < topUsers.length; i++) {
+                        hasWinners = true;
+                        const u = topUsers[i];
+                        const bonus = bonuses[i];
+                        u.balance += bonus;
+                        await u.save();
+                        
+                        broadcastTxt += `${medals[i]} *Top ${i+1}:* ${u.first_name} (ID: \`${u.id}\`)\n🎁 *Bonus:* \`${bonus}\` ৳ | *OTPs:* ${u.today_otps}\n\n`;
+                        bot.sendMessage(u.id, `🎉 *CONGRATULATIONS!* 🎉\n\nআপনি গতকালের Top ${i+1} ইউজার হয়েছেন!\n🎁 *Bonus:* \`${bonus}\` ৳ আপনার একাউন্টে যোগ করা হয়েছে!`, { parse_mode: 'Markdown' }).catch(()=>{});
+                    }
+                    
+                    if (hasWinners) {
+                        bot.sendMessage("@taskesy_news", broadcastTxt, { parse_mode: 'Markdown' }).catch(()=>{});
+                    }
                 }
                 
                 // 🟢 Mass Reset All active users of yesterday
@@ -838,9 +838,10 @@ bot.on('message', async (msg) => {
 
                 bot.sendMessage(chatId, `✅ *Withdraw Request Submitted!*\n\n💰 *Amount:* \`${amount}\` ৳\n💳 *Method:* ${state.method}\n\n_Please wait for admin approval._`, { parse_mode: 'Markdown' });
 
+                // 🟢 NEW: Send direct to Admin Chat
                 const wdGroupMsg = `🔔 *NEW WITHDRAW REQUEST*\n\n👤 *User ID:* \`${chatId}\`\n💳 *Method:* ${state.method}\n🏦 *Account/ID:* \`${state.account_id}\`\n💰 *Amount:* \`${amount}\` ৳\n\n_Select an action below:_`;
                 const wdMarkup = { inline_keyboard: [[ { text: "✅ Approve", callback_data: `wd_appr_${wd_id}`, style: "success" }, { text: "❌ Cancel", callback_data: `wd_canc_${wd_id}`, style: "danger" } ]]};
-                bot.sendMessage(PAYMENT_GROUP_ID, wdGroupMsg, { parse_mode: 'Markdown', reply_markup: wdMarkup }).catch(()=>{});
+                bot.sendMessage(ADMIN_ID, wdGroupMsg, { parse_mode: 'Markdown', reply_markup: wdMarkup }).catch(()=>{});
             } catch (e) { bot.sendMessage(chatId, "❌ Error processing request."); }
             delete userState[chatId]; return;
         }
@@ -911,6 +912,7 @@ bot.on('message', async (msg) => {
                 users.forEach(usr => bot.sendMessage(usr.id, `📢 *Notice from Admin:*\n\n${text}`, { parse_mode: 'Markdown' }).catch(()=>{}));
             } catch (e) {} delete adminState[chatId]; return;
         }
+        
         else if (state.action === 'wait_otp_rate') {
             const val = parseFloat(text.trim());
             if(!isNaN(val) && val >= 0) {
@@ -973,10 +975,26 @@ bot.on('message', async (msg) => {
             const targetUser = await User.findOne({ id: String(uid) });
             if (!targetUser) { bot.sendMessage(chatId, "❌ *User not found!*", { parse_mode: 'Markdown' }); } 
             else {
-                const msgText = `👤 *USER DETAILS*\n\nID: \`${targetUser.id}\`\nName: ${targetUser.first_name}\nUsername: ${targetUser.username}\n\n💰 *Total Bal:* \`${parseFloat(targetUser.balance.toFixed(2))}\` ৳\n\n📊 *Total OTPs:* \`${targetUser.total_otps}\`\n🚫 *Status:* ${targetUser.banned ? 'BANNED' : 'ACTIVE'}`;
-                const markup = { inline_keyboard: [[{ text: targetUser.banned ? "✅ Unban User" : "🚫 Ban User", callback_data: `adm_togban_${targetUser.id}`, style: targetUser.banned ? "success" : "danger" }]]};
+                // 🟢 NEW: Advanced User Details shown to Admin
+                const msgText = `👤 *USER DETAILS*\n\nID: \`${targetUser.id}\`\nName: ${targetUser.first_name}\nUsername: ${targetUser.username}\n\n💰 *Total Bal:* \`${parseFloat(targetUser.balance.toFixed(2))}\` ৳\n📈 *Today OTPs:* \`${targetUser.today_otps}\`\n👥 *Referred Users:* \`${targetUser.referral_count}\`\n\n📊 *Total OTPs:* \`${targetUser.total_otps}\`\n🚫 *Status:* ${targetUser.banned ? 'BANNED' : 'ACTIVE'}`;
+                const markup = { inline_keyboard: [
+                    [{ text: targetUser.banned ? "✅ Unban User" : "🚫 Ban User", callback_data: `adm_togban_${targetUser.id}`, style: targetUser.banned ? "success" : "danger" }],
+                    [{ text: "✏️ Edit Balance", callback_data: `adm_editbal_${targetUser.id}`, style: "primary" }] // 🟢 New Edit Balance Button
+                ]};
                 bot.sendMessage(chatId, msgText, { parse_mode: 'Markdown', reply_markup: markup });
             }
+            delete adminState[chatId]; return;
+        }
+        else if (state.action === 'wait_edit_bal') {
+            const val = parseFloat(text.trim());
+            if(!isNaN(val) && val >= 0) {
+                const targetUser = await User.findOne({ id: String(state.target_id) });
+                if(targetUser) {
+                    targetUser.balance = val;
+                    await targetUser.save();
+                    bot.sendMessage(chatId, `✅ *User ${state.target_id} balance updated to ${val} ৳*`, { parse_mode: 'Markdown' });
+                }
+            } else bot.sendMessage(chatId, "❌ Invalid amount");
             delete adminState[chatId]; return;
         }
     }
@@ -1006,7 +1024,6 @@ bot.on('message', async (msg) => {
                 reply_markup: { inline_keyboard: [[{ text: "🔥 Go To Live OTP Group", url: `https://t.me/${OTP_GROUP_ID.replace('@', '')}` }]] } 
             });
         }
-        // 🟢 FIX: Top Users now strictly filters by TODAY's date string
         else if (text === "🏆 Top Users") {
             const todayStr = getBdDateStr();
             const topUsers = await User.find({ today_otps: { $gt: 0 }, last_active_date: todayStr }).sort({ today_otps: -1 }).limit(10);
@@ -1096,7 +1113,6 @@ bot.on('callback_query', async (query) => {
         return;
     }
 
-    // 🟢 FIX: See Your Position Strict Check
     if (data === "my_rank") {
         const todayStr = getBdDateStr();
         const u = await User.findOne({ id: String(chatId) });
@@ -1123,6 +1139,7 @@ bot.on('callback_query', async (query) => {
                 [{ text: `⚙️ Voltxsms: ${config.voltxsms_on ? "ON 🟢" : "OFF 🔴"}`, callback_data: "tog_voltxsms" }],
                 [{ text: `🚀 Force /start: ${config.force_start ? "ON 🟢" : "OFF 🔴"}`, callback_data: "tog_forcestart" }],
                 [{ text: `🌐 Global Live OTP: ${config.global_feed_on ? "ON 🟢" : "OFF 🔴"}`, callback_data: "tog_globalfeed" }],
+                [{ text: `🏆 Top Reward: ${config.top_reward_on ? "ON 🟢" : "OFF 🔴"}`, callback_data: "tog_topreward" }], // 🟢 Added Top Reward Toggle
                 [{ text: "🔙 Back", callback_data: "admin_main", style: "danger" }]
             ];
             bot.editMessageText("⚙️ *Bot Settings*\n\nপ্যানেল এবং অন্যান্য সেটিংস অন/অফ করুন:", { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown', reply_markup: { inline_keyboard: kb } }).catch(()=>{});
@@ -1134,6 +1151,7 @@ bot.on('callback_query', async (query) => {
             if (key === 'voltxsms') config.voltxsms_on = !config.voltxsms_on;
             if (key === 'forcestart') config.force_start = !config.force_start;
             if (key === 'globalfeed') config.global_feed_on = !config.global_feed_on;
+            if (key === 'topreward') config.top_reward_on = !config.top_reward_on; // 🟢 Save Top Reward Config
             await saveAppConfig(config);
 
             let kb = [
@@ -1141,6 +1159,7 @@ bot.on('callback_query', async (query) => {
                 [{ text: `⚙️ Voltxsms: ${config.voltxsms_on ? "ON 🟢" : "OFF 🔴"}`, callback_data: "tog_voltxsms" }],
                 [{ text: `🚀 Force /start: ${config.force_start ? "ON 🟢" : "OFF 🔴"}`, callback_data: "tog_forcestart" }],
                 [{ text: `🌐 Global Live OTP: ${config.global_feed_on ? "ON 🟢" : "OFF 🔴"}`, callback_data: "tog_globalfeed" }],
+                [{ text: `🏆 Top Reward: ${config.top_reward_on ? "ON 🟢" : "OFF 🔴"}`, callback_data: "tog_topreward" }],
                 [{ text: "🔙 Back", callback_data: "admin_main", style: "danger" }]
             ];
             bot.editMessageText("⚙️ *Bot Settings*\n\nপ্যানেল এবং অন্যান্য সেটিংস অন/অফ করুন:", { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown', reply_markup: { inline_keyboard: kb } }).catch(()=>{});
@@ -1180,11 +1199,20 @@ bot.on('callback_query', async (query) => {
             }
         }
 
+        // 🟢 FIX: Dashboard now shows Today's Global OTPs
         else if (data === "adm_dash" && chatId === ADMIN_ID) {
             const totalUsers = await User.countDocuments();
             const statDoc = await Setting.findOne({ key: 'global_stats' });
             const gStats = statDoc && statDoc.data ? statDoc.data : { success: 0, pending: 0, failed: 0 };
-            const dashText = `📊 *BOT DASHBOARD*\n\n👥 *Total Users:* \`${totalUsers}\`\n\n📈 *Order Stats:*\n✅ Success: \`${gStats.success || 0}\`\n⏳ Pending: \`${gStats.pending || 0}\`\n❌ Failed: \`${gStats.failed || 0}\``;
+            
+            const todayStr = getBdDateStr();
+            const todayOtpsAggr = await User.aggregate([
+                { $match: { last_active_date: todayStr } },
+                { $group: { _id: null, total: { $sum: "$today_otps" } } }
+            ]);
+            const todayOtps = todayOtpsAggr[0] ? todayOtpsAggr[0].total : 0;
+
+            const dashText = `📊 *BOT DASHBOARD*\n\n👥 *Total Users:* \`${totalUsers}\`\n📈 *Today Total OTPs:* \`${todayOtps}\`\n\n📈 *Overall Order Stats:*\n✅ Success: \`${gStats.success || 0}\`\n⏳ Pending: \`${gStats.pending || 0}\`\n❌ Failed: \`${gStats.failed || 0}\``;
             bot.editMessageText(dashText, { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: "🔙 Back", callback_data: "admin_main", style: "danger" }]] }}).catch(()=>{});
         }
         else if (data === "adm_broadcast" && chatId === ADMIN_ID) {
@@ -1203,6 +1231,12 @@ bot.on('callback_query', async (query) => {
                 await targetUser.save();
                 bot.editMessageText(`✅ *User ${targetUser.banned ? 'BANNED' : 'UNBANNED'} successfully!*`, { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown' }).catch(()=>{});
             }
+        }
+        // 🟢 NEW: Admin Edit Balance Button Handler
+        else if (data.startsWith('adm_editbal_') && chatId === ADMIN_ID) {
+            const targetId = data.split('_')[2];
+            adminState[chatId] = { action: 'wait_edit_bal', target_id: targetId };
+            bot.sendMessage(chatId, `✏️ *Enter new balance for user ${targetId} (৳):*`, { parse_mode: 'Markdown' });
         }
         else if (data === "adm_userlist" && chatId === ADMIN_ID) {
             const users = await User.find({});
@@ -1372,6 +1406,26 @@ bot.on('callback_query', async (query) => {
             userState[chatId] = { action: 'wait_wd_id', method: method };
             bot.sendMessage(chatId, `✏️ *আপনার ${method} Account ID / Number দিন:*`, { parse_mode: 'Markdown' });
         }
+        else if (data.startsWith('wd_appr_') || data.startsWith('wd_canc_')) {
+            if (query.from.id !== ADMIN_ID) return;
+            const isApprove = data.startsWith('wd_appr_');
+            const wd_id = data.split('_')[2];
+            try {
+                const reqDoc = await Withdraw.findOne({ wd_id: wd_id });
+                if (!reqDoc || reqDoc.status !== 'pending') return;
+                if (isApprove) {
+                    reqDoc.status = 'approved'; await reqDoc.save();
+                    bot.editMessageText(query.message.text + "\n\n✅ *STATUS: APPROVED*", { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown' }).catch(()=>{});
+                    bot.sendMessage(reqDoc.user_id, `🎉 *Withdrawal Approved!*\n\n💰 Amount: \`${reqDoc.amount}\` ৳\n💳 Method: ${reqDoc.method}`, { parse_mode: 'Markdown' }).catch(()=>{});
+                } else {
+                    reqDoc.status = 'rejected'; await reqDoc.save();
+                    const uDoc = await User.findOne({ id: reqDoc.user_id });
+                    if (uDoc) { uDoc.balance = parseFloat((uDoc.balance + reqDoc.amount).toFixed(2)); await uDoc.save(); }
+                    bot.editMessageText(query.message.text + "\n\n❌ *STATUS: REJECTED*", { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown' }).catch(()=>{});
+                    bot.sendMessage(reqDoc.user_id, `❌ *Withdrawal Rejected!* Amount refunded.`, { parse_mode: 'Markdown' }).catch(()=>{});
+                }
+            } catch (e) {}
+        }
 
         // --- User 2FA Controls ---
         else if (data === "add_2fa") {
@@ -1457,4 +1511,4 @@ Promise.all([loadPanelKeys()]).then(() => {
     console.log("🔑 DB Settings Loaded. Default APIs injected.");
 });
 
-console.log("🚀 V29.0 Final DB Strict Mode Booted Successfully!");
+console.log("🚀 V30.0 Admin Advanced Features Booted Successfully!");
