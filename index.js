@@ -15,7 +15,7 @@ const PORT = process.env.PORT || 3000;
 const SERVER_URL = process.env.SERVER_URL; 
 
 app.use(express.json());
-app.get('/', (req, res) => res.send('Premium Fire OTP Bot v30.0 (Withdraw Fix & Full Admin Control) is Running!'));
+app.get('/', (req, res) => res.send('Premium Fire OTP Bot v31.0 (Withdraw Fix & Group Integration) is Running!'));
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 
 // --- MongoDB Setup ---
@@ -73,6 +73,7 @@ const Withdraw = mongoose.model('Withdraw', WithdrawSchema);
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const ADMIN_ID = parseInt(process.env.ADMIN_ID);
 const OTP_GROUP_ID = "@otp_number_grp";
+const PAYMENT_GROUP_ID = "-1003925192534"; // 🟢 Payment Group Restored
 const NUMBER_EXPIRY_MS = 15 * 60 * 1000; 
 
 let bot;
@@ -152,8 +153,8 @@ const deliveredOtps = new Set();
 const seenConsoleHits = new Set();
 const userLastSession = new Map(); 
 
-// 🟢 STRICT BD Time Function
-function getBdDateStr() {
+// 🟢 FIX: Flawless Time function for both Withdraw and Reset
+function getLocDate() {
     const now = new Date();
     const bdTimeMs = now.getTime() + (now.getTimezoneOffset() * 60000) + (6 * 3600000);
     return new Date(bdTimeMs).toISOString().split('T')[0];
@@ -177,7 +178,7 @@ async function getAppConfig() {
         if (config.min_withdraw === undefined) config.min_withdraw = 50;
         if (config.pay_methods === undefined) config.pay_methods = ['Binance'];
         if (config.reward_system === undefined) config.reward_system = true;
-        if (config.top_reward_on === undefined) config.top_reward_on = true; // 🟢 Top Reward Toggle    
+        if (config.top_reward_on === undefined) config.top_reward_on = true;     
         if (config.stexsms_on === undefined) config.stexsms_on = true;     
         if (config.voltxsms_on === undefined) config.voltxsms_on = true;   
         if (config.force_start === undefined) config.force_start = false;  
@@ -196,7 +197,7 @@ async function saveAppConfig(data) { await Setting.findOneAndUpdate({ key: 'app_
 async function ensureUser(user) {
     if (!user || !user.id) return null;
     try {
-        const todayStr = getBdDateStr();
+        const todayStr = getLocDate();
         let u = await User.findOne({ id: String(user.id) });
         if (!u) {
             u = new User({ id: String(user.id), first_name: user.first_name || 'User', username: user.username || 'N/A', joined: new Date().toISOString(), last_active_date: todayStr });
@@ -458,7 +459,7 @@ setInterval(async () => {
     if (activeNumbers.size === 0 || isPollingOTP) return;
     isPollingOTP = true;
     const config = await getAppConfig();
-    const todayStr = getBdDateStr();
+    const todayStr = getLocDate();
     
     for (const pName of ['stexsms', 'voltxsms']) {
         if (pName === 'stexsms' && !config.stexsms_on) continue;
@@ -655,13 +656,13 @@ setInterval(async () => {
     isPollingFeed = false;
 }, 6000);
 
-// 🟢 Foolproof Midnight Reset for Top Bonus
+// 🟢 Midnight Reset for Top Bonus
 setInterval(async () => {
     const now = new Date();
     const bdTimeMs = now.getTime() + (now.getTimezoneOffset() * 60000) + (6 * 3600000);
     const bdTime = new Date(bdTimeMs);
     
-    // Executes if time is exactly 12:00 AM Midnight (within 5 minutes window)
+    // Executes if time is exactly 12:00 AM Midnight
     if (bdTime.getHours() === 0 && bdTime.getMinutes() <= 5) {
         const todayStr = bdTime.toISOString().split('T')[0];
         
@@ -672,7 +673,6 @@ setInterval(async () => {
 
                 const config = await getAppConfig();
                 
-                // 🟢 Top 3 Condition Check if Reward is ON
                 if (config.top_reward_on !== false) {
                     const topUsers = await User.find({ today_otps: { $gte: 50 }, referral_count: { $gte: 3 } }).sort({ today_otps: -1 }).limit(3);
                     
@@ -697,7 +697,6 @@ setInterval(async () => {
                     }
                 }
                 
-                // 🟢 Mass Reset All active users of yesterday (Crucial for Dashboard & Top Users List)
                 await User.updateMany({}, { $set: { today_otps: 0, today_balance: 0, last_active_date: todayStr } });
             }
         } catch (e) { console.log("Reset Error:", e); }
@@ -747,7 +746,7 @@ bot.onText(/^\/start(?:\s+(.+))?$/, async (msg, match) => {
             first_name: msg.from.first_name || 'User', 
             username: msg.from.username || 'N/A', 
             joined: new Date().toISOString(), 
-            last_active_date: getBdDateStr() 
+            last_active_date: getLocDate() 
         });
         
         if (param && param !== String(chatId) && !param.startsWith('gn_')) {
@@ -761,7 +760,7 @@ bot.onText(/^\/start(?:\s+(.+))?$/, async (msg, match) => {
         }
         await u.save();
     } else {
-        const today = getBdDateStr();
+        const today = getLocDate();
         if (u.last_active_date !== today) { 
             u.today_otps = 0; 
             u.today_balance = 0; 
@@ -831,7 +830,6 @@ bot.on('message', async (msg) => {
                 if (amount < config.min_withdraw) return bot.sendMessage(chatId, `⚠️ *Minimum Withdraw is ${config.min_withdraw} ৳*`, { parse_mode: 'Markdown' });
                 if (amount > userDoc.balance) return bot.sendMessage(chatId, "❌ *Insufficient Balance!*", { parse_mode: 'Markdown' });
 
-                // Deduct Balance
                 userDoc.balance = parseFloat((userDoc.balance - amount).toFixed(2));
                 await userDoc.save();
 
@@ -840,11 +838,14 @@ bot.on('message', async (msg) => {
 
                 bot.sendMessage(chatId, `✅ *Withdraw Request Submitted!*\n\n💰 *Amount:* \`${amount}\` ৳\n💳 *Method:* ${state.method}\n\n_Please wait for admin approval._`, { parse_mode: 'Markdown' });
 
-                // 🟢 FIX: Send Notification Directly to Admin Bot DM
+                // 🟢 FIX: Send to Payment Group as requested
                 const wdGroupMsg = `🔔 *NEW WITHDRAW REQUEST*\n\n👤 *User ID:* \`${chatId}\`\n💳 *Method:* ${state.method}\n🏦 *Account/ID:* \`${state.account_id}\`\n💰 *Amount:* \`${amount}\` ৳\n\n_Select an action below:_`;
                 const wdMarkup = { inline_keyboard: [[ { text: "✅ Approve", callback_data: `wd_appr_${wd_id}`, style: "success" }, { text: "❌ Cancel", callback_data: `wd_canc_${wd_id}`, style: "danger" } ]]};
-                bot.sendMessage(ADMIN_ID, wdGroupMsg, { parse_mode: 'Markdown', reply_markup: wdMarkup }).catch((e)=>{ console.log(e); });
-            } catch (e) { bot.sendMessage(chatId, "❌ Error processing request."); }
+                bot.sendMessage(PAYMENT_GROUP_ID, wdGroupMsg, { parse_mode: 'Markdown', reply_markup: wdMarkup }).catch(()=>{});
+            } catch (e) { 
+                bot.sendMessage(chatId, "❌ Error processing request."); 
+                console.error(e);
+            }
             delete userState[chatId]; return;
         }
     }
@@ -972,7 +973,6 @@ bot.on('message', async (msg) => {
             }
             delete adminState[chatId]; return;
         }
-        // 🟢 FIX: User Manager Details Display 
         else if (state.action === 'wait_manage_userid') {
             const uid = text.trim();
             const targetUser = await User.findOne({ id: String(uid) });
@@ -987,7 +987,6 @@ bot.on('message', async (msg) => {
             }
             delete adminState[chatId]; return;
         }
-        // 🟢 FIX: Admin Edit User Balance
         else if (state.action === 'wait_edit_bal') {
             const val = parseFloat(text.trim());
             if (!isNaN(val) && val >= 0) {
@@ -1032,7 +1031,7 @@ bot.on('message', async (msg) => {
             });
         }
         else if (text === "🏆 Top Users") {
-            const todayStr = getBdDateStr();
+            const todayStr = getLocDate();
             const topUsers = await User.find({ today_otps: { $gt: 0 }, last_active_date: todayStr }).sort({ today_otps: -1 }).limit(10);
             
             let msgText = "🏆 *TODAY'S TOP 10 USERS* 🏆\n\n";
@@ -1121,7 +1120,7 @@ bot.on('callback_query', async (query) => {
     }
 
     if (data === "my_rank") {
-        const todayStr = getBdDateStr();
+        const todayStr = getLocDate();
         const u = await User.findOne({ id: String(chatId) });
         if (!u || u.today_otps === 0 || u.last_active_date !== todayStr) {
             return bot.answerCallbackQuery(query.id, { text: `আপনি আজকে এখনও কোনো OTP পাননি!`, show_alert: true }).catch(()=>{});
@@ -1203,7 +1202,6 @@ bot.on('callback_query', async (query) => {
             }
         }
 
-        // 🟢 FIX: Dashboard Today OTP Output
         else if (data === "adm_dash" && chatId === ADMIN_ID) {
             const totalUsers = await User.countDocuments();
             // Aggregate today's global OTP sum
@@ -1233,7 +1231,6 @@ bot.on('callback_query', async (query) => {
                 bot.editMessageText(`✅ *User ${targetUser.banned ? 'BANNED' : 'UNBANNED'} successfully!*`, { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown' }).catch(()=>{});
             }
         }
-        // 🟢 FIX: Handle Admin Balance Edit button
         else if (data.startsWith('adm_edbal_') && chatId === ADMIN_ID) {
             const targetId = data.split('_')[2];
             adminState[chatId] = { action: 'wait_edit_bal', target: targetId };
@@ -1276,7 +1273,6 @@ bot.on('callback_query', async (query) => {
             ];
             bot.editMessageText(msg, { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown', reply_markup: { inline_keyboard: kb } }).catch(()=>{});
         }
-        // 🟢 FIX: Top Reward System Toggle
         else if (data === "adm_tog_topreward" && chatId === ADMIN_ID) {
             const config = await getAppConfig();
             config.top_reward_on = (config.top_reward_on === false) ? true : false;
@@ -1423,6 +1419,31 @@ bot.on('callback_query', async (query) => {
             userState[chatId] = { action: 'wait_wd_id', method: method };
             bot.sendMessage(chatId, `✏️ *আপনার ${method} Account ID / Number দিন:*`, { parse_mode: 'Markdown' });
         }
+        
+        // 🟢 FIX: Secure Admin Callback logic for Withdraw
+        else if (data.startsWith('wd_appr_') || data.startsWith('wd_canc_')) {
+            if (query.from.id !== ADMIN_ID) {
+                bot.answerCallbackQuery(query.id, {text: "❌ Only Admin can do this!", show_alert: true}).catch(()=>{});
+                return;
+            }
+            const isApprove = data.startsWith('wd_appr_');
+            const wd_id = data.split('_')[2];
+            try {
+                const reqDoc = await Withdraw.findOne({ wd_id: wd_id });
+                if (!reqDoc || reqDoc.status !== 'pending') return;
+                if (isApprove) {
+                    reqDoc.status = 'approved'; await reqDoc.save();
+                    bot.editMessageText(query.message.text + "\n\n✅ *STATUS: APPROVED*", { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown' }).catch(()=>{});
+                    bot.sendMessage(reqDoc.user_id, `🎉 *Withdrawal Approved!*\n\n💰 Amount: \`${reqDoc.amount}\` ৳\n💳 Method: ${reqDoc.method}`, { parse_mode: 'Markdown' }).catch(()=>{});
+                } else {
+                    reqDoc.status = 'rejected'; await reqDoc.save();
+                    const uDoc = await User.findOne({ id: reqDoc.user_id });
+                    if (uDoc) { uDoc.balance = parseFloat((uDoc.balance + reqDoc.amount).toFixed(2)); await uDoc.save(); }
+                    bot.editMessageText(query.message.text + "\n\n❌ *STATUS: REJECTED*", { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown' }).catch(()=>{});
+                    bot.sendMessage(reqDoc.user_id, `❌ *Withdrawal Rejected!* Amount refunded.`, { parse_mode: 'Markdown' }).catch(()=>{});
+                }
+            } catch (e) {}
+        }
 
         // --- User 2FA Controls ---
         else if (data === "add_2fa") {
@@ -1508,4 +1529,4 @@ Promise.all([loadPanelKeys()]).then(() => {
     console.log("🔑 DB Settings Loaded. Default APIs injected.");
 });
 
-console.log("🚀 V30.0 Withdraw Fixed & Setup Configured Successfully!");
+console.log("🚀 V31.0 Withdraw Group Integration Booted Successfully!");
